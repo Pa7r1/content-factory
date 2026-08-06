@@ -1,0 +1,47 @@
+{
+  "kind": "Listing",
+  "data": {
+    "after": "t3_1abc123",
+    "dist": 3,
+    "children": [
+      {
+        "kind": "t3",
+        "data": {
+          "subreddit": "DesarrolloPersonal",
+          "title": "¿Cómo mantuvisteis vuestros hábitos más de un año?",
+          "ups": 842,
+          "downs": 0,
+          "num_comments": 213,
+          "score": 842,
+          "over_18": false,
+          "permalink": "/r/DesarrolloPersonal/comments/1abc123/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "subreddit": "DesarrolloPersonal",
+          "title": "La disciplina venció a la motivación: mi año de cambios",
+          "ups": 1503,
+          "downs": 0,
+          "num_comments": 401,
+          "score": 1503,
+          "over_18": false,
+          "permalink": "/r/DesarrolloPersonal/comments/1abc124/"
+        }
+      },
+      {
+        "kind": "t3",
+        "data": {
+          "subreddit": "DesarrolloPersonal",
+          "title": "Recomendación de libro sobre finanzas",
+          "ups": 97,
+          "num_comments": 12,
+          "over_18": false,
+          "permalink": "/r/DesarrolloPersonal/comments/1abc125/"
+        }
+      }
+    ],
+    "before": null
+  }
+}

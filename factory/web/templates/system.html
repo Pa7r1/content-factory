@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block titulo %}Sistema · Content Factory{% endblock %}
+
+{% block contenido %}
+<h1 class="titulo-vista">Sala de máquinas</h1>
+
+<section class="panel panel--investigacion" aria-labelledby="titulo-investigacion">
+  <h2 class="panel-titulo" id="titulo-investigacion">Investigación</h2>
+  <p class="proxima-ejecucion">
+    Próxima pasada:
+    {% if proxima_investigacion %}
+      <time datetime="{{ proxima_investigacion.isoformat() }}">
+        {{ proxima_investigacion.strftime('%d/%m a las %H:%M') }}
+      </time>
+    {% else %}
+      <span class="sin-dato">sin programar (el scheduler está parado)</span>
+    {% endif %}
+  </p>
+  <form class="accion accion--investigar" method="post" action="/research/run">
+    <button class="boton boton--investigar" type="submit">Investigar ahora</button>
+  </form>
+  <p class="nota">Encola un job por nicho; el worker los ejecuta en segundo plano.</p>
+</section>
+
+<section class="panel panel--cuota" aria-labelledby="titulo-cuota">
+  <h2 class="panel-titulo" id="titulo-cuota">Cuota de hoy</h2>
+  <div class="tabla-scroll">
+    <table class="cuotas">
+      <thead>
+        <tr>
+          <th scope="col">API</th>
+          <th scope="col">Usadas</th>
+          <th scope="col">Corte (80%)</th>
+          <th scope="col">Presupuesto</th>
+          <th scope="col">Consumo del corte</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for cuota in cuotas %}
+        <tr class="cuota-fila{% if cuota.pct_of_cutoff >= 100 %} cuota--agotada{% endif %}">
+          <th scope="row">{{ cuota.api }}</th>
+          <td>{{ cuota.used }}</td>
+          <td>{{ cuota.cutoff }}</td>
+          <td>{{ cuota.budget }}</td>
+          <td>
+            <span class="cuota-pct">{{ '%.1f'|format(cuota.pct_of_cutoff) }}%</span>
+            <span class="cuota-barra" aria-hidden="true"
+                  style="--pct: {{ '%.0f'|format(cuota.pct_of_cutoff) }}%"></span>
+          </td>
+        </tr>
+      {% else %}
+        <tr><td colspan="5" class="vacio">Ninguna API con presupuesto configurado.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="panel panel--jobs" aria-labelledby="titulo-jobs">
+  <h2 class="panel-titulo" id="titulo-jobs">Jobs recientes</h2>
+  <p class="jobs-resumen">{{ pendientes }} pendiente(s) en la cola.</p>
+  <div class="tabla-scroll">
+    <table class="jobs">
+      <thead>
+        <tr>
+          <th scope="col">#</th>
+          <th scope="col">Tipo</th>
+          <th scope="col">Estado</th>
+          <th scope="col">Intentos</th>
+          <th scope="col">Payload</th>
+          <th scope="col">Error</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for job in jobs %}
+        <tr class="job-fila job-fila--{{ job.status }}">
+          <th scope="row">{{ job.id }}</th>
+          <td>{{ job.type }}</td>
+          <td class="job-estado">{{ job.status }}</td>
+          <td class="job-intentos">{{ job.attempts }} / {{ job.max_attempts }}</td>
+          <td class="job-payload" title="{{ job.payload }}">{{ job.payload }}</td>
+          <td class="job-error" title="{{ job.error or '' }}">{{ job.error or '' }}</td>
+        </tr>
+      {% else %}
+        <tr><td colspan="6" class="vacio">La cola todavía no ha tenido trabajo.</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

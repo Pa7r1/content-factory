@@ -1,0 +1,10 @@
+[tool.pytest.ini_options]
+# La raíz del proyecto va al sys.path para que `import factory` funcione
+# ejecutando pytest desde content-factory/ (los tests no son un paquete).
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "concurrencia: tests que arrancan varios hilos contra un fichero SQLite real",
+]
+filterwarnings = ["error::DeprecationWarning:factory.*"]

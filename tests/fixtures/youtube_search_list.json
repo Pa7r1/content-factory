@@ -1,0 +1,55 @@
+{
+  "kind": "youtube#searchListResponse",
+  "etag": "PGGPBs8h7hcSxT-B5FoLPMgYCzk",
+  "nextPageToken": "CAoQAA",
+  "regionCode": "ES",
+  "pageInfo": { "totalResults": 1000000, "resultsPerPage": 10 },
+  "items": [
+    {
+      "kind": "youtube#searchResult",
+      "etag": "aMU8p2QK5x2eXvW3fF0hZ7ULCUw",
+      "id": { "kind": "youtube#video", "videoId": "5MgBikgcWnY" },
+      "snippet": {
+        "publishedAt": "2023-05-14T10:00:04Z",
+        "channelId": "UCuAXFkgsw1L7xaCfnd5JJOw",
+        "title": "Cómo construir hábitos que SÍ duran (y por qué fallan los demás)",
+        "description": "La ciencia detrás de los hábitos que se sostienen en el tiempo.",
+        "thumbnails": {
+          "default": { "url": "https://i.ytimg.com/vi/5MgBikgcWnY/default.jpg", "width": 120, "height": 90 }
+        },
+        "channelTitle": "Mentalidad Diaria",
+        "liveBroadcastContent": "none",
+        "publishTime": "2023-05-14T10:00:04Z"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "etag": "bNU8p2QK5x2eXvW3fF0hZ7ULCUw",
+      "id": { "kind": "youtube#video", "videoId": "j2K0kZ9pQxA" },
+      "snippet": {
+        "publishedAt": "2024-11-02T18:30:00Z",
+        "channelId": "UCX6b17PVsYBQ0ip5gyeme-Q",
+        "title": "7 hábitos de la gente que nunca procrastina",
+        "description": "Lo que hacen distinto.",
+        "thumbnails": {},
+        "channelTitle": "Disciplina Real",
+        "liveBroadcastContent": "none",
+        "publishTime": "2024-11-02T18:30:00Z"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "etag": "cOU8p2QK5x2eXvW3fF0hZ7ULCUw",
+      "id": { "kind": "youtube#channel", "channelId": "UCsomethingelse" },
+      "snippet": {
+        "publishedAt": "2019-01-01T00:00:00Z",
+        "channelId": "UCsomethingelse",
+        "title": "Un canal, no un vídeo",
+        "description": "search.list mezcla tipos si el filtro se relaja.",
+        "thumbnails": {},
+        "channelTitle": "Un canal, no un vídeo",
+        "liveBroadcastContent": "none"
+      }
+    }
+  ]
+}

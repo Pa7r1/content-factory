@@ -1,0 +1,82 @@
+# Configuración del Content Factory. Los secretos NO van aquí: van en .env.
+
+# Nichos activos (migrados de presets/presets.json del MVP "granja de videos").
+# `subreddits`: comunidades en español donde sondear engagement. Un subreddit que
+# no exista o no responda se salta (señal ausente con motivo), no rompe el pipeline.
+niches:
+  crecimiento_personal:
+    name: "Crecimiento personal"
+    language: es
+    tone: "calmado, reflexivo"
+    keywords:
+      - crecimiento personal
+      - desarrollo personal
+      - hábitos
+      - disciplina
+      - motivación
+      - mentalidad
+      - productividad personal
+    subreddits:
+      - DesarrolloPersonal
+      - productividad
+      - podemosmejorar
+  historias_cristianas:
+    name: "Historias cristianas"
+    language: es
+    tone: "templado, esperanzador"
+    keywords:
+      - historias cristianas
+      - historias de la biblia
+      - fe cristiana
+      - Jesús
+      - testimonios cristianos
+      - reflexiones cristianas
+    subreddits:
+      - Cristianismo
+      - catolicismo
+      - Biblia
+  historias_epicas:
+    name: "Historias épicas"
+    language: es
+    tone: "dramático, cinematográfico, misterioso"
+    keywords:
+      - historias épicas
+      - fantasía medieval
+      - traición y venganza
+      - leyendas medievales
+      - relatos de caballeros
+      - storytelling épico
+    subreddits:
+      - HistoriasDeReddit
+      - libros
+      - Fantasia
+
+# Pesos del score (deben sumar 1). Si falta una señal, el scorer re-normaliza
+# con las que quedan; las métricas crudas viven en ideas.score_details.
+score_weights:
+  demand: 0.35
+  competition: 0.30
+  evergreen: 0.20
+  cpm: 0.15
+
+# CPM estimado por nicho (USD, tabla estática inicial; se corrige con RPM real).
+cpm_by_niche:
+  crecimiento_personal: 4.0
+  historias_cristianas: 2.5
+  historias_epicas: 2.0
+
+# Presupuestos diarios de cuota por API. El corte efectivo es el 80% (core/quota.py).
+quotas:
+  youtube:
+    daily_budget: 4000   # unidades de YouTube Data API v3 (el tope real es 10000)
+
+# Horarios de las tareas periódicas (hora local, HH:MM). El scheduler solo
+# encola; el worker ejecuta.
+schedule:
+  research_daily: "07:30"
+  fetch_metrics: "09:00"
+
+# Cola de jobs.
+queue:
+  poll_interval_seconds: 2
+  max_attempts: 3

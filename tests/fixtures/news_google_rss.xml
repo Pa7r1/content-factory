@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Muestra de Google News RSS. Los items van A PROPÓSITO desordenados y con
+  fechas pegadas a los bordes de las ventanas de 7 y 30 días (respecto al
+  2026-08-06 12:00 UTC que congelan los tests), para que un fallo de orden o un
+  off-by-one en el conteo de momentum se note.
+
+    2026-03-14 09:00  -> 145   días (fuera de todo)
+    2026-08-05 07:15  ->   1.2 días (dentro de 7d)
+    2026-07-07 08:00  ->  30.2 días (FUERA de 30d por cuatro horas)
+    2026-08-03 22:40  ->   2.6 días (dentro de 7d)
+    2026-07-30 11:00  ->   7.0 días (FUERA de 7d por una hora)
+    2026-07-17 11:05  ->  20   días (dentro de 30d)
+    2026-07-30 13:00  ->   7.0 días (DENTRO de 7d por una hora)
+-->
+<rss xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+<channel>
+<generator>NFE/5.0</generator>
+<title>"hábitos" - Google Noticias</title>
+<link>https://news.google.com/search?q=h%C3%A1bitos&amp;hl=es-419&amp;gl=US&amp;ceid=US:es-419</link>
+<language>es-419</language>
+<webMaster>news-webmaster@google.com</webMaster>
+<copyright>2026 Google Inc.</copyright>
+<lastBuildDate>Thu, 06 Aug 2026 12:00:00 GMT</lastBuildDate>
+<description>Google Noticias</description>
+<item>
+<title>El viejo debate sobre la fuerza de voluntad - La Nación</title>
+<link>https://news.google.com/rss/articles/CBMiZWh0dHBzOi8vbGFuYWNpb24</link>
+<guid isPermaLink="false">CBMiZWh0dHBzOi8vbGFuYWNpb24</guid>
+<pubDate>Sat, 14 Mar 2026 09:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;El viejo debate&lt;/a&gt;</description>
+<source url="https://www.lanacion.com.ar">La Nación</source>
+</item>
+<item>
+<title>Los hábitos que la neurociencia sí respalda - El País</title>
+<link>https://news.google.com/rss/articles/CBMiWWh0dHBzOi8vZWxwYWlz</link>
+<guid isPermaLink="false">CBMiWWh0dHBzOi8vZWxwYWlz</guid>
+<pubDate>Wed, 05 Aug 2026 07:15:00 GMT</pubDate>
+<description>&lt;a href="https://news.google.com/rss/articles/CBMiWWh0dHBz"&gt;Los hábitos que la neurociencia sí respalda&lt;/a&gt;&amp;nbsp;&amp;nbsp;&lt;font color="#6f6f6f"&gt;El País&lt;/font&gt;</description>
+<source url="https://elpais.com">El País</source>
+</item>
+<item>
+<title>Rutinas de verano: lo que dicen los expertos - Clarín</title>
+<link>https://news.google.com/rss/articles/CBMiZ2h0dHBzOi8vY2xhcmlu</link>
+<guid isPermaLink="false">CBMiZ2h0dHBzOi8vY2xhcmlu</guid>
+<pubDate>Tue, 07 Jul 2026 08:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Rutinas de verano&lt;/a&gt;</description>
+<source url="https://www.clarin.com">Clarín</source>
+</item>
+<item>
+<title>Cinco hábitos matutinos que arruinan tu día - Infobae</title>
+<link>https://news.google.com/rss/articles/CBMiXWh0dHBzOi8vaW5mb2JhZQ</link>
+<guid isPermaLink="false">CBMiXWh0dHBzOi8vaW5mb2JhZQ</guid>
+<pubDate>Mon, 03 Aug 2026 22:40:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Cinco hábitos matutinos&lt;/a&gt;</description>
+<source url="https://www.infobae.com">Infobae</source>
+</item>
+<item>
+<title>Un método de 30 días para cambiar de rutina - Milenio</title>
+<link>https://news.google.com/rss/articles/CBMiaGh0dHBzOi8vbWlsZW5pbw</link>
+<guid isPermaLink="false">CBMiaGh0dHBzOi8vbWlsZW5pbw</guid>
+<pubDate>Thu, 30 Jul 2026 11:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Un método de 30 días&lt;/a&gt;</description>
+<source url="https://www.milenio.com">Milenio</source>
+</item>
+<item>
+<title>Estudio: cambiar de hábitos cuesta 66 días, no 21 - BBC News Mundo</title>
+<link>https://news.google.com/rss/articles/CBMiYmh0dHBzOi8vYmJj</link>
+<guid isPermaLink="false">CBMiYmh0dHBzOi8vYmJj</guid>
+<pubDate>Fri, 17 Jul 2026 11:05:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Estudio&lt;/a&gt;</description>
+<source url="https://www.bbc.com">BBC News Mundo</source>
+</item>
+<item>
+<title>La trampa de empezar un lunes - El Universal</title>
+<link>https://news.google.com/rss/articles/CBMiaWh0dHBzOi8vZWx1bml2ZXJzYWw</link>
+<guid isPermaLink="false">CBMiaWh0dHBzOi8vZWx1bml2ZXJzYWw</guid>
+<pubDate>Thu, 30 Jul 2026 13:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;La trampa de empezar un lunes&lt;/a&gt;</description>
+<source url="https://www.eluniversal.com.mx">El Universal</source>
+</item>
+</channel>
+</rss>

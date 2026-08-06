@@ -1,0 +1,10 @@
+{
+  "items": [
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2025090100", "access": "all-access", "agent": "user", "views": 41230 },
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2025100100", "access": "all-access", "agent": "user", "views": 39880 },
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2025110100", "access": "all-access", "agent": "user", "views": 43110 },
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2026010100", "access": "all-access", "agent": "user", "views": 61044 },
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2026070100", "access": "all-access", "agent": "user", "views": 38210 },
+    { "project": "es.wikipedia", "article": "Hábito_(psicología)", "granularity": "monthly", "timestamp": "2026080100", "access": "all-access", "agent": "user", "views": 9004 }
+  ]
+}

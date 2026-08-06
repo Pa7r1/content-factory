@@ -1,0 +1,47 @@
+{
+  "kind": "youtube#channelListResponse",
+  "etag": "Ck1eLd6BFC1jH8gW3xY4Zp1Ab2c",
+  "pageInfo": { "totalResults": 2, "resultsPerPage": 5 },
+  "items": [
+    {
+      "kind": "youtube#channel",
+      "etag": "Dk1eLd6BFC1jH8gW3xY4Zp1Ab2c",
+      "id": "UCuAXFkgsw1L7xaCfnd5JJOw",
+      "snippet": {
+        "title": "Mentalidad Diaria",
+        "description": "Crecimiento personal sin humo.",
+        "customUrl": "@mentalidaddiaria",
+        "publishedAt": "2019-03-11T14:22:01Z",
+        "country": "ES"
+      },
+      "contentDetails": {
+        "relatedPlaylists": { "likes": "", "uploads": "UUuAXFkgsw1L7xaCfnd5JJOw" }
+      },
+      "statistics": {
+        "viewCount": "41230991",
+        "subscriberCount": "87400",
+        "hiddenSubscriberCount": false,
+        "videoCount": "312"
+      }
+    },
+    {
+      "kind": "youtube#channel",
+      "etag": "Ek1eLd6BFC1jH8gW3xY4Zp1Ab2c",
+      "id": "UCX6b17PVsYBQ0ip5gyeme-Q",
+      "snippet": {
+        "title": "Disciplina Real",
+        "description": "Vídeos cortos sobre disciplina.",
+        "publishedAt": "2022-08-01T09:00:00Z",
+        "country": "MX"
+      },
+      "contentDetails": {
+        "relatedPlaylists": { "likes": "", "uploads": "UUX6b17PVsYBQ0ip5gyeme-Q" }
+      },
+      "statistics": {
+        "viewCount": "9120334",
+        "hiddenSubscriberCount": true,
+        "videoCount": "1044"
+      }
+    }
+  ]
+}

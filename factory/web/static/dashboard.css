@@ -1,0 +1,785 @@
+/* Content Factory — hoja de estilo del dashboard.
+ *
+ * Principio: menos es más. Una columna, jerarquía por tamaño y no por color,
+ * paleta de papel y tinta con un verde salvia para la única acción que importa
+ * (aprobar). Sin frameworks, sin fuentes externas, sin JavaScript.
+ *
+ * Orden del fichero:
+ *   1. Tokens (claro + oscuro)
+ *   2. Base y tipografía
+ *   3. Estructura: cabecera, main, avisos
+ *   4. Vista Ideas: ranking, tarjeta, desglose, acciones
+ *   5. Vista Sistema: paneles, cuotas, jobs
+ *   6. Utilidades compartidas (tablas, botones, vacíos)
+ *   7. Móvil y movimiento reducido
+ */
+
+/* ------------------------------------------------------------------ */
+/* 1. Tokens                                                           */
+/* ------------------------------------------------------------------ */
+
+:root {
+  color-scheme: light dark;
+
+  /* Papel y tinta */
+  --papel: #f6f2eb;
+  --tarjeta: #fffcf7;
+  --tarjeta-hundida: #f1ece2;
+  --tinta: #221f1b;
+  --tinta-suave: #605949;
+  --tinta-tenue: #78705f; /* 4.9:1 sobre --tarjeta: el texto secundario sigue siendo legible */
+  --linea: #e3dbcd;
+  --linea-fuerte: #cfc4b0;
+
+  /* Acentos: uno por significado, ninguno decorativo */
+  --verde: #3d6b52;
+  --verde-hover: #325843;
+  --verde-tinta: #ffffff;
+  --verde-tenue: #e7efe9;
+  --arcilla: #9d4f2a;
+  --ambar: #7d6017;
+  --rojo: #93372f;
+  --rojo-tenue: #f6ebe8;
+
+  --anillo: #3d6b52;
+
+  /* Formas */
+  --radio: 12px;
+  --radio-chico: 7px;
+  --sombra: 0 1px 2px rgba(34, 31, 27, 0.05),
+            0 6px 18px -14px rgba(34, 31, 27, 0.35);
+
+  /* Ritmo vertical */
+  --esp-1: 0.25rem;
+  --esp-2: 0.5rem;
+  --esp-3: 0.75rem;
+  --esp-4: 1rem;
+  --esp-5: 1.5rem;
+  --esp-6: 2rem;
+  --esp-7: 3rem;
+
+  --ancho: 48rem;
+
+  --serif: ui-serif, Iowan Old Style, Palatino, "Palatino Linotype", Georgia,
+           "Times New Roman", serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+          Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+          "Liberation Mono", monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --papel: #14130f;
+    --tarjeta: #1d1b16;
+    --tarjeta-hundida: #24211a;
+    --tinta: #ece6d9;
+    --tinta-suave: #b0a795;
+    --tinta-tenue: #8d8474;
+    --linea: #322d24;
+    --linea-fuerte: #443d31;
+
+    --verde: #86bb9b;
+    --verde-hover: #9bcaad;
+    --verde-tinta: #12211a;
+    --verde-tenue: #1e2c24;
+    --arcilla: #dd9a6f;
+    --ambar: #cfae5e;
+    --rojo: #e59084;
+    --rojo-tenue: #2b1d1a;
+
+    --anillo: #86bb9b;
+    --sombra: 0 1px 2px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* 2. Base                                                             */
+/* ------------------------------------------------------------------ */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body.dashboard {
+  margin: 0;
+  padding: 0 0 var(--esp-7);
+  background: var(--papel);
+  color: var(--tinta);
+  font-family: var(--sans);
+  font-size: 1rem;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3 {
+  font-family: var(--serif);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+  text-decoration-color: var(--linea-fuerte);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  text-decoration-color: currentColor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--anillo);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+
+/* ------------------------------------------------------------------ */
+/* 3. Estructura                                                       */
+/* ------------------------------------------------------------------ */
+
+.dashboard-cabecera {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--esp-3) var(--esp-5);
+  max-width: var(--ancho);
+  margin: 0 auto;
+  padding: var(--esp-5) var(--esp-5) var(--esp-4);
+}
+
+.dashboard-marca {
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  letter-spacing: 0.01em;
+  color: var(--tinta-suave);
+}
+
+.dashboard-nav {
+  display: flex;
+  gap: var(--esp-1);
+}
+
+.nav-enlace {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  padding: 0 var(--esp-4);
+  border-radius: 999px;
+  font-size: 0.95rem;
+  text-decoration: none;
+  color: var(--tinta-suave);
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.nav-enlace:hover {
+  background: var(--tarjeta);
+  color: var(--tinta);
+}
+
+.nav-enlace.es-activa {
+  background: var(--tinta);
+  color: var(--papel);
+}
+
+.dashboard-main {
+  max-width: var(--ancho);
+  margin: 0 auto;
+  padding: 0 var(--esp-5);
+}
+
+.titulo-vista {
+  font-size: clamp(1.9rem, 5vw, 2.5rem);
+  margin-bottom: var(--esp-2);
+}
+
+/* Aviso tras una acción: se lee como una nota al margen, no como una alarma. */
+.aviso {
+  display: flex;
+  gap: var(--esp-3);
+  align-items: baseline;
+  margin-bottom: var(--esp-5);
+  padding: var(--esp-3) var(--esp-4);
+  border-left: 3px solid var(--verde);
+  border-radius: 0 var(--radio-chico) var(--radio-chico) 0;
+  background: var(--verde-tenue);
+  color: var(--tinta);
+  font-size: 0.95rem;
+}
+
+.aviso::before {
+  content: "✓";
+  color: var(--verde);
+  font-weight: 700;
+}
+
+/* ------------------------------------------------------------------ */
+/* 4. Vista Ideas                                                      */
+/* ------------------------------------------------------------------ */
+
+.resumen-estados {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--esp-2) var(--esp-4);
+  margin-bottom: var(--esp-6);
+  color: var(--tinta-tenue);
+  font-size: 0.9rem;
+}
+
+.resumen-estado {
+  white-space: nowrap;
+}
+
+.resumen-estado + .resumen-estado::before {
+  content: "·";
+  margin-right: var(--esp-4);
+  color: var(--linea-fuerte);
+}
+
+.ranking {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-4);
+}
+
+.idea {
+  padding: var(--esp-5);
+  border: 1px solid var(--linea);
+  border-radius: var(--radio);
+  background: var(--tarjeta);
+  box-shadow: var(--sombra);
+  transition: border-color 200ms ease, transform 200ms ease;
+}
+
+.idea:hover {
+  border-color: var(--linea-fuerte);
+}
+
+.idea-cabecera {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--esp-1) var(--esp-5);
+  align-items: start;
+}
+
+/* El score es la decisión: es lo más grande de la tarjeta y lo primero que
+ * cae en el ojo al bajar la lista. */
+.idea-score {
+  grid-row: span 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 4.25rem;
+  padding-top: 0.15em;
+}
+
+.idea-score-valor {
+  font-family: var(--serif);
+  font-size: 2.6rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+
+/* Banda del score: el color acompaña, la palabra decide (nunca solo color). */
+.idea--alta .idea-score-valor { color: var(--verde); }
+.idea--media .idea-score-valor { color: var(--ambar); }
+.idea--baja .idea-score-valor { color: var(--tinta-tenue); }
+
+.idea-score-banda {
+  margin-top: var(--esp-1);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--tinta-tenue);
+}
+
+.idea-titulo {
+  font-size: 1.25rem;
+  line-height: 1.35;
+  font-weight: 600;
+  text-wrap: balance;
+}
+
+.idea-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* Sin separadores: el hueco basta y evita que un "·" abra una línea nueva. */
+  gap: var(--esp-2) var(--esp-5);
+  margin-top: var(--esp-3);
+  font-size: 0.8rem;
+  color: var(--tinta-tenue);
+}
+
+.idea-nicho {
+  padding: 0.15rem var(--esp-3);
+  border-radius: 999px;
+  background: var(--tarjeta-hundida);
+  color: var(--tinta-suave);
+  font-size: 0.78rem;
+}
+
+/* Desglose: detalle a demanda. Cerrado no pesa nada; abierto explica el score. */
+.desglose-caja {
+  margin-top: var(--esp-4);
+  border-top: 1px solid var(--linea);
+  padding-top: var(--esp-3);
+}
+
+.desglose-resumen {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--esp-2);
+  min-height: 32px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--tinta-tenue);
+  font-size: 0.85rem;
+  transition: color 180ms ease;
+}
+
+.desglose-resumen::-webkit-details-marker {
+  display: none;
+}
+
+.desglose-resumen::before {
+  content: "";
+  width: 0.42em;
+  height: 0.42em;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: translateY(-0.16em) rotate(45deg);
+  transition: transform 180ms ease;
+}
+
+details[open] > .desglose-resumen::before {
+  transform: translateY(0.1em) rotate(225deg);
+}
+
+.desglose-resumen:hover {
+  color: var(--tinta);
+}
+
+.desglose {
+  list-style: none;
+  margin: var(--esp-3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-3);
+}
+
+.desglose-fila {
+  display: grid;
+  grid-template-columns: 9.5rem 1fr auto;
+  align-items: center;
+  gap: var(--esp-1) var(--esp-3);
+  font-size: 0.85rem;
+}
+
+.desglose-nombre {
+  color: var(--tinta-suave);
+}
+
+.desglose-barra {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tarjeta-hundida);
+  overflow: hidden;
+}
+
+.desglose-barra::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: var(--pct, 0%);
+  border-radius: 999px;
+  background: var(--tinta-suave);
+}
+
+.desglose-cifras {
+  font-variant-numeric: tabular-nums;
+  color: var(--tinta-tenue);
+  white-space: nowrap;
+}
+
+.desglose-valor {
+  color: var(--tinta);
+  font-weight: 600;
+}
+
+.desglose-peso {
+  font-size: 0.78rem;
+}
+
+/* Señal ausente: se cuenta, no se grita. */
+.desglose-fila.sin-senal .desglose-valor {
+  color: var(--tinta-tenue);
+  font-weight: 400;
+}
+
+.ausencias {
+  grid-column: 1 / -1;
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--esp-3);
+  border-left: 2px solid var(--linea);
+  display: flex;
+  flex-direction: column;
+  gap: var(--esp-1);
+}
+
+.ausencia {
+  font-size: 0.78rem;
+  color: var(--tinta-tenue);
+}
+
+.ausencia-senal {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--tinta-suave);
+}
+
+/* Los motivos traen URLs y trazas largas: se recortan a tres líneas y el resto
+ * queda en el `title`. El detalle no puede comerse la tarjeta. */
+.ausencia-motivo {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.idea-acciones {
+  display: flex;
+  align-items: center;
+  gap: var(--esp-2);
+  margin-top: var(--esp-5);
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. Vista Sistema                                                    */
+/* ------------------------------------------------------------------ */
+
+.panel {
+  margin-top: var(--esp-5);
+  padding: var(--esp-5);
+  border: 1px solid var(--linea);
+  border-radius: var(--radio);
+  background: var(--tarjeta);
+  box-shadow: var(--sombra);
+}
+
+.panel-titulo {
+  font-size: 1.1rem;
+  margin-bottom: var(--esp-3);
+}
+
+.proxima-ejecucion {
+  font-size: 0.95rem;
+  color: var(--tinta-suave);
+}
+
+.proxima-ejecucion time {
+  color: var(--tinta);
+  font-variant-numeric: tabular-nums;
+}
+
+.sin-dato {
+  color: var(--tinta-tenue);
+  font-style: italic;
+}
+
+.nota,
+.jobs-resumen {
+  margin-top: var(--esp-3);
+  font-size: 0.83rem;
+  color: var(--tinta-tenue);
+}
+
+.accion--investigar {
+  margin-top: var(--esp-4);
+}
+
+/* Cuotas */
+.cuota-barra {
+  display: block;
+  width: 100%;
+  min-width: 4rem;
+  height: 6px;
+  margin-top: 0.4rem;
+  border-radius: 999px;
+  background: var(--tarjeta-hundida);
+  overflow: hidden;
+}
+
+.cuota-barra::after {
+  content: "";
+  display: block;
+  height: 100%;
+  width: min(var(--pct, 0%), 100%);
+  border-radius: 999px;
+  background: var(--tinta-suave);
+}
+
+.cuota--agotada .cuota-barra::after {
+  background: var(--arcilla);
+}
+
+.cuota--agotada .cuota-pct {
+  color: var(--arcilla);
+  font-weight: 600;
+}
+
+/* Jobs */
+.job-estado {
+  font-size: 0.78rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--tinta-tenue);
+  white-space: nowrap;
+}
+
+.job-fila--done .job-estado { color: var(--verde); }
+.job-fila--running .job-estado { color: var(--ambar); }
+.job-fila--failed .job-estado { color: var(--rojo); }
+
+.job-payload {
+  max-width: 16rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  color: var(--tinta-tenue);
+}
+
+/* El error se ve, pero no chilla: color contenido y tamaño pequeño. */
+.job-error {
+  max-width: 18rem;
+  color: var(--rojo);
+  font-size: 0.8rem;
+}
+
+.job-error:not(:empty) {
+  padding: 0.15rem var(--esp-2);
+  border-radius: var(--radio-chico);
+  background: var(--rojo-tenue);
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. Utilidades compartidas                                           */
+/* ------------------------------------------------------------------ */
+
+.tabla-scroll {
+  overflow-x: auto;
+  margin: 0 calc(var(--esp-5) * -1);
+  padding: 0 var(--esp-5);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+thead th {
+  padding-bottom: var(--esp-2);
+  border-bottom: 1px solid var(--linea);
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--tinta-tenue);
+  white-space: nowrap;
+}
+
+th,
+td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--esp-3) var(--esp-4) var(--esp-3) 0;
+}
+
+th:last-child,
+td:last-child {
+  padding-right: 0;
+}
+
+tbody tr + tr th,
+tbody tr + tr td {
+  border-top: 1px solid var(--linea);
+}
+
+tbody th[scope="row"] {
+  font-weight: 600;
+}
+
+tbody td {
+  font-variant-numeric: tabular-nums;
+  color: var(--tinta-suave);
+}
+
+/* Botones: uno primario por vista, el resto se retira. */
+.boton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 44px;
+  padding: 0 var(--esp-5);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  font: inherit;
+  font-size: 0.95rem;
+  cursor: pointer;
+  transition: background-color 180ms ease, border-color 180ms ease,
+              color 180ms ease;
+}
+
+.boton--aprobar,
+.boton--investigar {
+  background: var(--verde);
+  color: var(--verde-tinta);
+  font-weight: 600;
+}
+
+.boton--aprobar:hover,
+.boton--investigar:hover {
+  background: var(--verde-hover);
+}
+
+/* Descartar no es un peligro: es la otra mitad de la decisión. Sin rojo. */
+.boton--descartar {
+  background: transparent;
+  color: var(--tinta-tenue);
+  padding: 0 var(--esp-4);
+}
+
+.boton--descartar:hover {
+  background: var(--tarjeta-hundida);
+  color: var(--tinta);
+}
+
+.accion {
+  margin: 0;
+}
+
+/* Vacíos con voz humana, no tablas en blanco. */
+.vacio {
+  padding: var(--esp-6) 0;
+  color: var(--tinta-suave);
+  font-family: var(--serif);
+  font-size: 1.05rem;
+  line-height: 1.6;
+  text-wrap: pretty;
+}
+
+td.vacio {
+  padding: var(--esp-5) 0;
+  font-size: 0.95rem;
+}
+
+.vacio-sugerencia {
+  display: block;
+  margin-top: var(--esp-2);
+  font-family: var(--sans);
+  font-size: 0.88rem;
+  color: var(--tinta-tenue);
+}
+
+/* ------------------------------------------------------------------ */
+/* 7. Móvil y movimiento reducido                                      */
+/* ------------------------------------------------------------------ */
+
+@media (max-width: 44rem) {
+  .dashboard-cabecera,
+  .dashboard-main {
+    padding-left: var(--esp-4);
+    padding-right: var(--esp-4);
+  }
+
+  .idea {
+    padding: var(--esp-4);
+  }
+
+  /* El score se pone encima del título: la tarjeta se lee de arriba abajo. */
+  .idea-cabecera {
+    grid-template-columns: 1fr;
+    gap: var(--esp-2);
+  }
+
+  .idea-score {
+    grid-row: auto;
+    flex-direction: row;
+    align-items: baseline;
+    gap: var(--esp-2);
+    min-width: 0;
+    padding-top: 0;
+  }
+
+  .idea-score-valor {
+    font-size: 2.2rem;
+  }
+
+  .idea-score-banda {
+    margin-top: 0;
+  }
+
+  .desglose-fila {
+    grid-template-columns: 1fr auto;
+  }
+
+  .desglose-barra {
+    grid-column: 1 / -1;
+    order: 2;
+  }
+
+  .idea-acciones {
+    margin-top: var(--esp-4);
+  }
+
+  .accion--aprobar {
+    flex: 1;
+  }
+
+  .accion--aprobar .boton {
+    width: 100%;
+  }
+
+  .tabla-scroll {
+    margin: 0 calc(var(--esp-4) * -1);
+    padding: 0 var(--esp-4);
+  }
+
+  .job-payload,
+  .job-error {
+    max-width: 12rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

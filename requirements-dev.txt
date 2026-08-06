@@ -1,0 +1,14 @@
+# Dependencias solo de test. Instalar en el venv del proyecto:
+#   ./venv/bin/pip install -r requirements-dev.txt
+#
+# Nada "por si acaso": cada una entra porque hay tests que no se pueden escribir
+# sin ella.
+-r requirements.txt
+
+pytest>=9.1,<10        # OJO: pytest 9 convirtió en ERROR el setup/teardown estilo
+                       # nose, pytest.collect y los yield-tests. No copiar recetas de 8.x.
+responses>=0.26        # intercepta requests en el HTTPAdapter (frontera de transporte)
+freezegun>=1.5         # congela datetime.now() en quota, wikipedia, news y competitor
+httpx2>=2.9            # cliente que pide el TestClient de Starlette 1.x para la capa
+                       # web. OJO: con `httpx` (v1) también arranca, pero Starlette
+                       # avisa de que está deprecado; httpx2 es el soportado.

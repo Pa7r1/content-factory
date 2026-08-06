@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>{% block titulo %}Content Factory{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', path='/dashboard.css') }}">
+</head>
+<body class="dashboard">
+
+  <header class="dashboard-cabecera">
+    <p class="dashboard-marca">Content Factory</p>
+    <nav class="dashboard-nav" aria-label="Secciones">
+      <a class="nav-enlace{% if activa == 'ideas' %} es-activa{% endif %}"
+         href="/"{% if activa == 'ideas' %} aria-current="page"{% endif %}>Ideas</a>
+      <a class="nav-enlace{% if activa == 'sistema' %} es-activa{% endif %}"
+         href="/system"{% if activa == 'sistema' %} aria-current="page"{% endif %}>Sistema</a>
+    </nav>
+  </header>
+
+  <main class="dashboard-main">
+    {% if mensaje %}
+      <p class="aviso" role="status">{{ mensaje }}</p>
+    {% endif %}
+    {% block contenido %}{% endblock %}
+  </main>
+
+</body>
+</html>

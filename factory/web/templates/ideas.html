@@ -1,0 +1,104 @@
+{% extends "base.html" %}
+{% block titulo %}Ideas · Content Factory{% endblock %}
+
+{# Etiquetas en castellano para los estados que devuelve la base. #}
+{% set nombres_estado = {
+     'new': ('sin decidir', 'sin decidir'),
+     'shortlisted': ('en la lista corta', 'en la lista corta'),
+     'approved': ('aprobada', 'aprobadas'),
+     'rejected': ('descartada', 'descartadas'),
+     'used': ('ya usada', 'ya usadas'),
+   } %}
+
+{% block contenido %}
+<h1 class="titulo-vista">Ideas de hoy</h1>
+
+<p class="resumen-estados">
+  {% for estado, total in totales.items() %}
+    {% set etiqueta = nombres_estado.get(estado, (estado, estado)) %}
+    <span class="resumen-estado resumen-estado--{{ estado }}">{{ total }} {{ etiqueta[0] if total == 1 else etiqueta[1] }}</span>
+  {% else %}
+    <span class="resumen-estado">La base todavía está vacía.</span>
+  {% endfor %}
+</p>
+
+{% if not ideas %}
+  <p class="vacio">
+    Todavía no hay nada que decidir. Mañana a primera hora entra una pasada nueva.
+    <span class="vacio-sugerencia">
+      Si no querés esperar, lanzá una investigación desde <a href="/system">Sistema</a>.
+    </span>
+  </p>
+{% endif %}
+
+<ol class="ranking">
+{% for idea in ideas %}
+  {% if idea.score >= 75 %}
+    {% set banda, banda_texto = 'alta', 'muy prometedora' %}
+  {% elif idea.score >= 60 %}
+    {% set banda, banda_texto = 'media', 'aceptable' %}
+  {% else %}
+    {% set banda, banda_texto = 'baja', 'floja' %}
+  {% endif %}
+  <li class="ranking-puesto">
+    <article class="idea idea--{{ banda }}" id="idea-{{ idea.id }}">
+
+      <header class="idea-cabecera">
+        <p class="idea-score">
+          <span class="idea-score-valor">{{ '%.1f'|format(idea.score) }}</span>
+          <span class="idea-score-banda">{{ banda_texto }}</span>
+        </p>
+        <h2 class="idea-titulo">{{ idea.title }}</h2>
+        <p class="idea-meta">
+          <span class="idea-nicho">{{ idea.niche.replace('_', ' ') }}</span>
+          {% if idea.suggested_format %}<span class="idea-formato">{{ idea.suggested_format }}</span>{% endif %}
+          <span class="idea-fuente">vía {{ idea.source or 'fuente desconocida' }}</span>
+          {% if idea.keyword %}<span class="idea-keyword">sonda: {{ idea.keyword }}</span>{% endif %}
+          <span class="idea-fecha">{{ idea.updated_at[:16] if idea.updated_at else '' }}</span>
+        </p>
+      </header>
+
+      <details class="desglose-caja">
+        <summary class="desglose-resumen">Cómo salió esta nota</summary>
+        <ul class="desglose">
+        {% for componente in idea.components %}
+          <li class="desglose-fila{% if componente.value is none %} sin-senal{% endif %}">
+            <span class="desglose-nombre">{{ componente.label }}</span>
+            <span class="desglose-barra" aria-hidden="true"
+                  style="--pct: {% if componente.value is not none %}{{ '%.0f'|format(componente.value * 100) }}{% else %}0{% endif %}%"></span>
+            <span class="desglose-cifras">
+              <span class="desglose-valor">{% if componente.value is not none %}{{ '%.0f'|format(componente.value * 100) }}{% else %}sin dato{% endif %}</span>
+              <span class="desglose-peso">{% if componente.weight is not none %}· pesa {{ '%.0f'|format(componente.weight * 100) }}%{% else %}· no contó{% endif %}</span>
+            </span>
+            {% if componente.missing %}
+              <ul class="ausencias">
+              {% for ausente in componente.missing %}
+                <li class="ausencia">
+                  <span class="ausencia-senal">{{ ausente.signal }}</span>
+                  <span class="ausencia-fuente">({{ ausente.source }})</span>
+                  <span class="ausencia-motivo" title="{{ ausente.reason }}">{{ ausente.reason }}</span>
+                </li>
+              {% endfor %}
+              </ul>
+            {% endif %}
+          </li>
+        {% endfor %}
+        </ul>
+      </details>
+
+      <div class="idea-acciones">
+        <form class="accion accion--aprobar" method="post" action="/ideas/{{ idea.id }}/approve">
+          <button class="boton boton--aprobar" type="submit"
+                  aria-label="Aprobar: {{ idea.title }}">Aprobar</button>
+        </form>
+        <form class="accion accion--descartar" method="post" action="/ideas/{{ idea.id }}/reject">
+          <button class="boton boton--descartar" type="submit"
+                  aria-label="Descartar: {{ idea.title }}">Descartar</button>
+        </form>
+      </div>
+
+    </article>
+  </li>
+{% endfor %}
+</ol>
+{% endblock %}
