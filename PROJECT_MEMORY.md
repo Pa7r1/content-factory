@@ -3,6 +3,50 @@
 Avances, decisiones y pendientes. Se actualiza al cerrar cada unidad de trabajo.
 El plan completo por hitos está en [ROADMAP.md](ROADMAP.md).
 
+---
+
+## Dónde estamos (última sesión: 2026-08-06)
+
+**Hito 1 cerrado.** Commit `ff34504` en `main`, 57 ficheros, sin remoto configurado.
+Los 4 hitos restantes están descritos en [ROADMAP.md](ROADMAP.md); el hito 2 es guiones + base de
+conocimiento.
+
+**Arrancar:**
+
+```bash
+venv/bin/python app.py          # dashboard en http://localhost:8000
+venv/bin/python -m pytest -q    # 611 passed, CERO xfail
+```
+
+Si aparece algún `xfail`, no lo ignores: significa que se dejó un arreglo a medias — el marcador
+lleva dentro el motivo.
+
+**Qué hace hoy:** cada mañana a las 07:30 sondea las keywords semilla de los 3 nichos
+(crecimiento personal, historias cristianas, historias épicas), puntúa las ideas de 0 a 100 y las
+deja en el dashboard para aprobar o descartar. Aprobar deja la idea en `approved`, que es de donde
+arranca el hito 2. También hay un botón "Investigar ahora" en la pestaña Sistema.
+
+**Funciona a medio gas** hasta que exista `YOUTUBE_API_KEY`: sin ella falta el componente de
+competencia (30% del score) y la mediana de vistas, así que las ideas salen casi solo de titulares
+de Google News. El scorer re-normaliza los pesos y deja el motivo de cada señal ausente en
+`ideas.score_details`, visible en el desglose del dashboard.
+
+**Al volver, en este orden:**
+
+1. **Crear la clave de YouTube** — es lo más rentable que se puede hacer ahora mismo; los 4 pasos
+   están en [README.md](README.md). Sin ella el motor no rinde y el hito 2 se construye sobre
+   ideas peor puntuadas.
+2. Arrancar y correr la suite: confirmar que sigue todo verde antes de tocar nada.
+3. Empezar el hito 2.
+
+**Cómo se trabaja aquí:** cada unidad de trabajo pasa por `backend-python` (implementa) →
+`testing-python` (tests) → `verificador` (ejecuta y devuelve salida real) → `revisor` (revisa en
+contexto limpio) → arreglar lo que salga → `git`. No es ceremonia: en el hito 1 la revisión
+encontró **12 fallos que 611 tests verdes no veían**, tres de ellos capaces de dejar el sistema
+muerto en silencio durante días. La suite verde no basta; hay que verificar en ejecución.
+
+---
+
 ## Decisiones de arquitectura (2026-08-06)
 
 - **Monolito modular Python + SQLite (WAL) + cola de jobs en tabla + APScheduler 3.x + FastAPI/Jinja2.**
@@ -223,22 +267,38 @@ Suite completa tras las dos rondas: **611 passed, 0 xfailed**.
 
 ## Pendientes
 
-- Registrar la app de Reddit (la aprobación free tarda 2–4 semanas) — mientras, JSON público.
-- Solicitar la auditoría de cumplimiento de la API de YouTube al llegar al hito 4.
-- Conseguir clave de YouTube Data API v3 en Google Cloud Console (gratis). **Sin ella el motor
-  funciona pero le falta la mitad**: no hay componente de competencia ni señal de vistas, y las
-  ideas salen solo de titulares de noticias.
-- Verificar los subreddits añadidos en `settings.yaml` cuando Reddit deje de responder 403: se
-  eligieron por criterio, no se pudieron comprobar (uno que no exista simplemente se salta).
-- Coste de cuota de YouTube por pasada: 102 unidades por keyword (search 100 + videos 1 +
-  channels 1). Con 19 keywords son ~1.938 de las 3.200 del corte diario. Un cuarto nicho no cabe:
-  habrá que espaciar los nichos por días o bajar `TOP_VIDEOS`.
-- El dashboard muestra los jobs con estado/intentos/error pero **sin fechas**: `core.models.Job` no
-  lleva `created_at`/`finished_at`. Para un sistema desatendido, saber si el fallo fue hoy o hace
-  tres días importa; son dos campos opcionales en el dataclass y dos columnas en `_row_to_job`.
-- Los temas de Google News son ruidosos para keywords genéricas ("disciplina" trae noticias de
-  fútbol). Mitigación actual: el checkpoint humano del dashboard. Mejora posible: exigir que el
-  titular contenga la frase completa o filtrar por sección.
+### Depende del usuario (nadie más puede desbloquearlo)
+
+- **Clave de YouTube Data API v3** en Google Cloud Console (gratis, 5 min; pasos en el README).
+  Es el pendiente más rentable: sin ella el motor funciona pero **le falta la mitad** — no hay
+  componente de competencia ni señal de vistas, y las ideas salen solo de titulares de noticias.
+- **Crear el fichero `.env` a mano** en la raíz, con las claves que lista el README. Un hook del
+  setup impide que lo escriba yo, y está bien que sea así: los ficheros de entorno son del usuario.
+- **Registrar la app de Reddit** (la aprobación del free tier tarda 2–4 semanas). Mientras tanto
+  se usa el JSON público, que **responde 403 a esta IP** — la señal degrada con su motivo en la DB.
+- **Solicitar la auditoría de cumplimiento de la API de YouTube** al llegar al hito 4: los
+  proyectos nuevos suben los vídeos como privados hasta pasarla, así que conviene pedirla antes.
+
+### Deuda técnica anotada (la resuelvo yo cuando toque)
+
 - **`factory/research/competitor.py` no tiene llamador todavía** (225 líneas, con sus tests en
   verde). Está escrito y probado a la espera de los hitos siguientes, que son los que lo enganchan
-  al pipeline. No se toca hasta entonces: no es código muerto, es código adelantado.
+  al pipeline. No es código muerto: es código adelantado.
+- **Los jobs se muestran sin fecha en el dashboard**: `core.models.Job` no lleva
+  `created_at`/`finished_at`. Para un sistema desatendido, saber si el fallo fue hoy o hace tres
+  días importa; son dos campos opcionales en el dataclass y dos columnas en `_row_to_job`.
+- **El presupuesto de cuota no da para un cuarto nicho**: 102 unidades por keyword (search 100 +
+  videos 1 + channels 1), 19 keywords = ~1.938 de las 3.200 del corte diario. Habrá que espaciar
+  los nichos por días o bajar `TOP_VIDEOS`.
+- **Google News es ruidoso con keywords genéricas** ("disciplina" trae noticias de fútbol).
+  Mitigación actual: el checkpoint humano. Mejora posible: exigir la frase completa en el titular
+  o filtrar por sección.
+- **Los subreddits de `settings.yaml` están sin verificar**: se eligieron por criterio y no se
+  pudieron comprobar por el 403. Uno que no exista simplemente se salta.
+- **trendspy** quedó fuera a propósito como mejora futura del scorer (fuente opcional degradable).
+
+### Fuera de este repo
+
+- Los especialistas creados para este proyecto (`backend-python`, `testing-python` y las reglas
+  `11-python`, `22-ffmpeg`, `32-fastapi`) viven en `~/.claude/` y se copiaron al repo
+  `claude-setup` para que queden versionados. Si se editan en un sitio, hay que copiarlos al otro.
