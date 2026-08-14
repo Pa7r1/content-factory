@@ -37,10 +37,14 @@ Monolito modular en Python 3.12+. Sin Docker, sin Redis, sin n8n: un usuario, un
 Lo que existe hoy son tres módulos, no más:
 
 ```
-factory/core/       db, models, queue, quota, scheduler, config   ← lo único compartido
-factory/research/   fuentes + scorer + pipeline diario            ← hito 1, hecho
+factory/core/       db, models, queue, quota, scheduler, config,
+                    http_util, llm, text                          ← lo único compartido
+factory/research/   fuentes + candidates + scorer + pipeline      ← hito 1, hecho
 factory/web/        dashboard FastAPI + Jinja2                    ← hito 1, hecho
 ```
+
+`http_util`, `llm` y `text` viven en `core/` porque los usan varios módulos de dominio y
+`core/` no puede importar de `research/` sin invertir la dependencia.
 
 **Aún no existen — no los busques**: `script/` (h2), `media/` `video/` `thumbnail/` (h3),
 `seo/` `publish/` (h4), `analytics/` (h5). Ni siquiera como directorio vacío.
@@ -128,9 +132,13 @@ Cada pieza tiene ya su forma en el repo. Cópiala en vez de inventar una nueva.
 - **Tarea periódica** → `add_job` en `build_scheduler()` con `id=` fijo, `replace_existing=True`,
   `max_instances=1`, `coalesce=True` y un `misfire_grace_time` razonado. El wrapper **solo encola**,
   y hace `close_conn()` en `finally`: el hilo del executor acumula conexiones si no.
-- **API externa** → el transporte es `http_util.get_json` / `get_with_retries`, que ya traen
-  timeout, reintentos con jitter y `Retry-After`. Con cuota: `quota.reserve(...)` → llamada →
-  `quota.reconcile(...)`. Falta de credencial → `SourceUnavailable`, no un return vacío.
+- **API externa** → el transporte es `core/http_util.py` (`get_json`, `get_with_retries`,
+  `post_json`), que ya trae timeout, reintentos con jitter y `Retry-After`. Con cuota:
+  `quota.reserve(...)` → llamada → `quota.reconcile(...)`, y reconcilia el gasto **real**, no el
+  reservado. Falta de credencial → `SourceUnavailable`, no un return vacío.
+- **Llamada a un LLM** → `core/llm.py` (Gemini). Reserva el peor caso de reintentos y liquida lo
+  gastado. Si el modelo no responde, **la tarea no produce nada y lo registra**: nunca un fallback
+  que copie datos de entrada como si fueran salida propia.
 - **Configuración** → un accessor con nombre y tipo en `core/config.py`; no leas el YAML crudo desde
   tu módulo. Los secretos se leen con `os.environ` en el punto de uso.
 

@@ -5,39 +5,48 @@ El plan completo por hitos está en [ROADMAP.md](ROADMAP.md).
 
 ---
 
-## Dónde estamos (última sesión: 2026-08-06)
+## Dónde estamos (última sesión: 2026-08-13)
 
-**Hito 1 cerrado.** Commit `ff34504` en `main`, 57 ficheros, sin remoto configurado.
-Los 4 hitos restantes están descritos en [ROADMAP.md](ROADMAP.md); el hito 2 es guiones + base de
-conocimiento.
+**Hito 1 cerrado y el motor por fin rinde entero.** Repo en GitHub:
+`https://github.com/Pa7r1/content-factory` (privado). Esquema en `user_version = 3`.
+El hito 2 (guiones + base de conocimiento) es lo siguiente; está descrito en [ROADMAP.md](ROADMAP.md).
 
 **Arrancar:**
 
 ```bash
 venv/bin/python app.py          # dashboard en http://localhost:8000
-venv/bin/python -m pytest -q    # 611 passed, CERO xfail
+venv/bin/python -m pytest -q    # 758 passed, CERO xfail
 ```
 
 Si aparece algún `xfail`, no lo ignores: significa que se dejó un arreglo a medias — el marcador
 lleva dentro el motivo.
 
-**Qué hace hoy:** cada mañana a las 07:30 sondea las keywords semilla de los 3 nichos
-(crecimiento personal, historias cristianas, historias épicas), puntúa las ideas de 0 a 100 y las
-deja en el dashboard para aprobar o descartar. Aprobar deja la idea en `approved`, que es de donde
-arranca el hito 2. También hay un botón "Investigar ahora" en la pestaña Sistema.
+**Qué hace hoy:** cada mañana a las 07:30 sondea las keywords semilla de los 3 nichos, mide las
+señales, **criba el material y le pide a Gemini temas de vídeo propios** (ya no copia títulos
+ajenos), los puntúa de 0 a 100 y los deja en el dashboard para aprobar o descartar. También hay
+un botón "Investigar ahora" en la pestaña Sistema.
 
-**Funciona a medio gas** hasta que exista `YOUTUBE_API_KEY`: sin ella falta el componente de
-competencia (30% del score) y la mediana de vistas, así que las ideas salen casi solo de titulares
-de Google News. El scorer re-normaliza los pesos y deja el motivo de cada señal ausente en
-`ideas.score_details`, visible en el desglose del dashboard.
+**Las dos claves están puestas y verificadas** (`YOUTUBE_API_KEY`, `GOOGLE_AI_API_KEY`). Faltan
+`PEXELS_API_KEY` y `PIXABAY_API_KEY`, que son del hito 3.
+
+**Cuota:** una pasada de un nicho cuesta ~612 unidades de YouTube; el corte diario está en 3.200,
+así que los 3 nichos entran justos. Gemini gasta ~1 unidad por keyword de un tope de 160.
 
 **Al volver, en este orden:**
 
-1. **Crear la clave de YouTube** — es lo más rentable que se puede hacer ahora mismo; los 4 pasos
-   están en [README.md](README.md). Sin ella el motor no rinde y el hito 2 se construye sobre
-   ideas peor puntuadas.
-2. Arrancar y correr la suite: confirmar que sigue todo verde antes de tocar nada.
+1. **Repoblar los dos nichos que quedaron sin pasar** (`historias_cristianas`, `historias_epicas`):
+   la cuota de YouTube se agotó el día 13. El cron de las 07:30 lo hace solo si la app está viva.
+2. Confirmar que la suite sigue verde antes de tocar nada.
 3. Empezar el hito 2.
+
+**Dos decisiones de calidad pendientes, que son del usuario:**
+
+- **La basura sigue contando en el score.** La criba filtra lo que llega al LLM, pero los vídeos
+  descartados **siguen alimentando la mediana de vistas**: el visualizer de Bad Bunny ya no genera
+  una idea, pero todavía infla la demanda de la keyword "lo logré". Arreglarlo cambia todos los
+  scores.
+- **El dedupe no cubre reformulaciones con subtítulo**: "El efecto dominó de una pequeña elección"
+  y "…: construyendo hábitos" siguen siendo dos ideas. Normaliza grafía y puntuación, no sentido.
 
 **Cómo se trabaja aquí:** cada unidad de trabajo pasa por `backend-python` (implementa) →
 `testing-python` (tests) → `verificador` (ejecuta y devuelve salida real) → `revisor` (revisa en
@@ -140,6 +149,65 @@ muerto en silencio durante días. La suite verde no basta; hay que verificar en 
     ideas nuevas sin tocar la aprobada ni la descartada.
 
 ## Problemas resueltos
+
+### El motor arreglado destapó que las ideas eran títulos ajenos (2026-08-13)
+
+Con la clave de YouTube puesta, la primera pasada real funcionó de maravilla en lo técnico —15/15
+jobs `done`, cuota controlada, log limpio— y produjo esto como mejores ideas:
+
+```
+78.91  BAD BUNNY - NADIE SABE (Visualizer)
+78.91  Myke Towers - Lo Logré (Video Oficial)
+70.40  Mujer de Altar | Canción Cristiana de Adoración (Video Oficial)
+69.37  If you don't have Discipline you are a nobody #discipline #mentality
+```
+
+De las 20 mejores, 2 servían. **Causa**: `pipeline` tomaba los títulos de YouTube y los titulares
+de News **literalmente como ideas**. La keyword "lo logré" encuentra a Myke Towers y, como su vídeo
+tiene millones de vistas, el sistema lo lee como "tema con demanda enorme" y lo premia.
+
+**El fallo llevaba ahí desde el principio y era invisible**: sin clave de YouTube las ideas salían
+solo de titulares de noticias, así que arreglar el motor fue lo que lo destapó. 611 tests en verde
+no lo veían porque ninguno preguntaba *si la idea era buena*, solo si se escribía bien.
+
+**Arreglo**: `research/candidates.py` criba el material (música, Shorts, hashtags, otros idiomas,
+y limpia a cp1252) y `core/llm.py` le pide a Gemini **temas propios**. Regla que no se negocia:
+**si el modelo no responde, la keyword no produce nada y el motivo queda en `research_log`; jamás
+se cae de vuelta a copiar un título ajeno.** Preferimos cero ideas a ideas basura.
+
+Resultado con el mismo nicho y la misma máquina: `La quietud como motor: encuentra tu propósito en
+el silencio`, `Desactivando el auto-sabotaje: entendiendo tus barreras internas`.
+
+### La revisión en contexto limpio encontró 6 fallos más (2026-08-13)
+
+Con 758 tests en verde. Dos críticos, del tipo "muerto en silencio durante días":
+
+1. **El dedupe entre pasadas dejó de funcionar al meter el LLM.** `_upsert_idea` emparejaba por
+   título **exacto**, algo que valía cuando los títulos se copiaban de una fuente; un modelo nunca
+   repite la cadena literal. Consecuencia grave: **lo que el humano rechazaba volvía al día
+   siguiente reformulado**, o sea que el checkpoint humano —que es una mitigación de diseño, no una
+   comodidad— dejaba de tener efecto. Arreglo: columna `dedupe_key` (migración 3) con índice sobre
+   `(niche, dedupe_key)`, emparejando por clave normalizada. Verificado contra la base real: tres
+   variantes de un título ya rechazado chocan con él y no se reproponen.
+2. **Una caída total del LLM dejaba el job en `done` tras quemar 1.938 unidades de YouTube.** La
+   cuota se cobra *antes* de consultar al modelo, y como las keywords se "sondeaban" bien, el job
+   terminaba verde sin escribir una sola idea. Cada día, sin error visible. Arreglo: se cuentan las
+   keywords donde se consultó al modelo y falló; a las 2 seguidas se corta la pasada y el job queda
+   `failed`. Medido: 204 unidades gastadas en vez de 612.
+
+Y dos que introdujo el propio arreglo del filtro de noticias, ambos por pedir "frase completa":
+
+3. **El filtro anulaba la señal en 14 de las 19 keywords.** "traición y venganza" no casaba con
+   *"Traición, venganza y poder en la nueva serie"*, y 14 keywords son multipalabra. Arreglo:
+   exigir todas las palabras significativas, no contiguas.
+4. **El filtro fabricaba un 0 duro donde antes había ausencia.** Si quedaba un titular viejo,
+   `last_7d=0` daba `momentum_norm = 0.0` en vez de `None`: **35 puntos de diferencia medidos**.
+   Es el fallo más caro del hito 1 entrando por otra puerta. Ahora `None` cuando ningún titular
+   trae fecha; "hay noticias y ninguna esta semana" sí es un 0 legítimo (tema frío).
+
+También: nada impedía que el modelo copiase un título del material que se le pasaba (se descarta
+por `dedupe_key`), y el backoff no leía el `retryDelay` que Gemini manda en el cuerpo en vez de en
+`Retry-After` (un 429 reintentado a los 2 s caía en la misma ventana de 60 s y volvía a fallar).
 
 ### Revisión en contexto limpio: 10 fallos de operación (2026-08-06)
 
