@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Muestra pensada para el filtro por tema de `headlines(only_on_topic=True)`.
+  Cada titular está aquí por un motivo:
+
+    1. "Fantasia epica"        -> la keyword con tilde tiene que casar sin ella
+    2. "La fantasía medieval"  -> y la keyword sin tilde, con ella
+    3. "Habitos de sueño"      -> frase entera: casa con "hábitos de sueño"
+    4. "Hábitos de estudio"    -> y NO casa con "hábitos de sueño"
+    5. "El cuarteto de cuerdas"-> "arte" no puede casar dentro de otra palabra
+    6. "El arte de no hacer"   -> "arte" sí casa cuando es palabra
+    7. "Cine de terror"        -> ninguna de las keywords de arriba lo toca
+
+  Las fechas son todas recientes: aquí no se mide momentum, se mide el filtro.
+-->
+<rss xmlns:media="http://search.yahoo.com/mrss/" version="2.0">
+<channel>
+<generator>NFE/5.0</generator>
+<title>Google Noticias</title>
+<link>https://news.google.com/search?hl=es-419&amp;gl=US&amp;ceid=US:es-419</link>
+<language>es-419</language>
+<copyright>2026 Google Inc.</copyright>
+<lastBuildDate>Thu, 06 Aug 2026 12:00:00 GMT</lastBuildDate>
+<description>Google Noticias</description>
+<item>
+<title>Fantasia epica: por que el genero no pasa de moda - El Pais</title>
+<link>https://news.google.com/rss/articles/CBMiAWZhbnRhc2lh</link>
+<guid isPermaLink="false">CBMiAWZhbnRhc2lh</guid>
+<pubDate>Wed, 05 Aug 2026 07:15:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Fantasia epica&lt;/a&gt;</description>
+<source url="https://elpais.com">El Pais</source>
+</item>
+<item>
+<title>La fantasía medieval vuelve a la televisión - Clarín</title>
+<link>https://news.google.com/rss/articles/CBMiAmZhbnRhc2lh</link>
+<guid isPermaLink="false">CBMiAmZhbnRhc2lh</guid>
+<pubDate>Tue, 04 Aug 2026 10:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;La fantasía medieval&lt;/a&gt;</description>
+<source url="https://www.clarin.com">Clarín</source>
+</item>
+<item>
+<title>Habitos de sueño: lo que de verdad dice la ciencia - BBC News Mundo</title>
+<link>https://news.google.com/rss/articles/CBMiA3N1ZW5v</link>
+<guid isPermaLink="false">CBMiA3N1ZW5v</guid>
+<pubDate>Mon, 03 Aug 2026 22:40:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Habitos de sueño&lt;/a&gt;</description>
+<source url="https://www.bbc.com">BBC News Mundo</source>
+</item>
+<item>
+<title>Hábitos de estudio para rendir mejor en el examen - Infobae</title>
+<link>https://news.google.com/rss/articles/CBMiBGVzdHVkaW8</link>
+<guid isPermaLink="false">CBMiBGVzdHVkaW8</guid>
+<pubDate>Sun, 02 Aug 2026 08:30:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Hábitos de estudio&lt;/a&gt;</description>
+<source url="https://www.infobae.com">Infobae</source>
+</item>
+<item>
+<title>El cuarteto de cuerdas abre la temporada - La Nación</title>
+<link>https://news.google.com/rss/articles/CBMiBWN1YXJ0ZXRv</link>
+<guid isPermaLink="false">CBMiBWN1YXJ0ZXRv</guid>
+<pubDate>Sat, 01 Aug 2026 19:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;El cuarteto de cuerdas&lt;/a&gt;</description>
+<source url="https://www.lanacion.com.ar">La Nación</source>
+</item>
+<item>
+<title>El arte de no hacer nada, según los daneses - Milenio</title>
+<link>https://news.google.com/rss/articles/CBMiBmFydGVkZQ</link>
+<guid isPermaLink="false">CBMiBmFydGVkZQ</guid>
+<pubDate>Fri, 31 Jul 2026 12:00:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;El arte de no hacer nada&lt;/a&gt;</description>
+<source url="https://www.milenio.com">Milenio</source>
+</item>
+<item>
+<title>Cine de terror: los estrenos del mes - El Universal</title>
+<link>https://news.google.com/rss/articles/CBMiB3RlcnJvcg</link>
+<guid isPermaLink="false">CBMiB3RlcnJvcg</guid>
+<pubDate>Thu, 30 Jul 2026 09:45:00 GMT</pubDate>
+<description>&lt;a href="#"&gt;Cine de terror&lt;/a&gt;</description>
+<source url="https://www.eluniversal.com.mx">El Universal</source>
+</item>
+</channel>
+</rss>

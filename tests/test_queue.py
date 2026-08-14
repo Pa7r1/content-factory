@@ -8,6 +8,7 @@ haber probado nada.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 import threading
 import time
@@ -275,6 +276,93 @@ def test_pending_count_solo_cuenta_los_pendientes(conn: sqlite3.Connection):
     queue.claim_next()
 
     assert queue.pending_count() == 1
+
+
+# ---------------------------------------------------------------------------
+# Marcas de tiempo
+#
+# El dashboard las necesita para distinguir un fallo de hoy de uno de hace tres
+# días. Las escribe SQLite con datetime('now'), así que aquí se comprueba el
+# formato y qué marca está puesta en cada estado, no el instante exacto.
+# ---------------------------------------------------------------------------
+
+FORMATO_UTC = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+
+
+def test_un_job_recien_encolado_tiene_created_at_y_ninguna_marca_de_ejecucion(
+    conn: sqlite3.Connection,
+):
+    queue.enqueue("research_daily")
+
+    job = queue.list_jobs()[0]
+
+    assert FORMATO_UTC.match(job.created_at or ""), job.created_at
+    assert job.started_at is None
+    assert job.finished_at is None
+
+
+def test_claim_next_devuelve_el_job_con_created_at_y_started_at_puestos(
+    conn: sqlite3.Connection,
+):
+    queue.enqueue("research_daily")
+
+    job = queue.claim_next()
+
+    assert FORMATO_UTC.match(job.created_at or ""), job.created_at
+    assert FORMATO_UTC.match(job.started_at or ""), job.started_at
+    assert job.finished_at is None
+
+
+def test_list_jobs_ve_el_started_at_del_job_en_curso(conn: sqlite3.Connection):
+    queue.enqueue("research_daily")
+    reclamado = queue.claim_next()
+
+    listado = queue.list_jobs("running")[0]
+
+    assert FORMATO_UTC.match(listado.started_at or ""), listado.started_at
+    assert listado.started_at == reclamado.started_at
+    assert listado.finished_at is None
+
+
+def test_al_completar_el_job_queda_con_finished_at_sin_perder_las_otras_marcas(
+    conn: sqlite3.Connection,
+):
+    job_id = queue.enqueue("research_daily")
+    reclamado = queue.claim_next()
+
+    queue.complete(job_id)
+
+    job = queue.list_jobs("done")[0]
+    assert job.created_at == reclamado.created_at
+    assert job.started_at == reclamado.started_at
+    assert FORMATO_UTC.match(job.finished_at or ""), job.finished_at
+    assert job.finished_at >= job.started_at
+
+
+def test_un_job_que_falla_sin_reintento_tambien_queda_con_finished_at(
+    conn: sqlite3.Connection,
+):
+    job_id = queue.enqueue("research_daily")
+    queue.claim_next()
+
+    queue.fail(job_id, "handler no registrado", retry=False)
+
+    job = queue.list_jobs("failed")[0]
+    assert FORMATO_UTC.match(job.finished_at or ""), job.finished_at
+
+
+def test_un_job_devuelto_a_la_cola_para_reintentar_sigue_sin_finished_at(
+    conn: sqlite3.Connection,
+):
+    # Mientras queden intentos el job no ha terminado: ponerle finished_at haría
+    # que el dashboard lo diese por cerrado con un reintento aún por delante.
+    job_id = queue.enqueue("research_daily", max_attempts=3)
+    queue.claim_next()
+
+    queue.fail(job_id, "timeout de la fuente")
+
+    job = queue.list_jobs("pending")[0]
+    assert job.finished_at is None
 
 
 # ---------------------------------------------------------------------------

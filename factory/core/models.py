@@ -124,3 +124,9 @@ class Job:
     max_attempts: int = 3
     run_after: str | None = None
     error: str | None = None
+    # Marcas de tiempo que escribe la propia cola (texto UTC de SQLite). Sin
+    # ellas el dashboard no puede distinguir un fallo de hoy de uno de hace
+    # tres días, que es el diagnóstico básico de un sistema desatendido.
+    created_at: str | None = None
+    started_at: str | None = None
+    finished_at: str | None = None

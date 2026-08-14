@@ -26,9 +26,11 @@ RSS_RE = re.compile(r"https://news\.google\.com/rss/search.*")
 
 @responses.activate
 def test_headlines_extrae_titulo_enlace_y_fecha_de_cada_item(muestra):
+    # Sin filtro por tema: aquí se prueba el parseo del feed entero, no qué
+    # titulares hablan de la keyword.
     responses.get(RSS_RE, body=muestra("news_google_rss.xml"), status=200)
 
-    items = news_source.headlines("hábitos")
+    items = news_source.headlines("hábitos", only_on_topic=False)
 
     assert len(items) == 7
     assert items[0]["title"] == "Los hábitos que la neurociencia sí respalda - El País"
@@ -39,9 +41,10 @@ def test_headlines_extrae_titulo_enlace_y_fecha_de_cada_item(muestra):
 @responses.activate
 def test_headlines_ordena_los_titulares_del_mas_nuevo_al_mas_viejo(muestra):
     # La muestra llega desordenada a propósito: el más viejo va el primero.
+    # Sin filtro, para que el orden se compruebe sobre los siete titulares.
     responses.get(RSS_RE, body=muestra("news_google_rss.xml"), status=200)
 
-    fechas = [i["published"] for i in news_source.headlines("hábitos")]
+    fechas = [i["published"] for i in news_source.headlines("hábitos", only_on_topic=False)]
 
     assert fechas == sorted(fechas, reverse=True)
     assert fechas[0] == datetime(2026, 8, 5, 7, 15, tzinfo=timezone.utc)
@@ -110,11 +113,26 @@ def test_un_503_del_feed_se_reintenta_y_acaba_en_fuente_no_disponible(sin_espera
 @freeze_time("2026-08-06 12:00:00")
 @responses.activate
 def test_momentum_signal_cuenta_los_titulares_de_siete_y_treinta_dias(muestra):
+    # El momentum se cuenta sobre los titulares DEL TEMA: de los siete de la
+    # muestra, solo tres nombran "hábitos" (05-ago, 03-ago y 17-jul).
+    # Dentro de 7d: 05-ago y 03-ago. El de 17-jul (20 d) solo entra en los 30d.
+    responses.get(RSS_RE, body=muestra("news_google_rss.xml"), status=200)
+
+    señal = news_source.momentum_signal("hábitos")
+
+    assert señal["last_7d"] == 2
+    assert señal["last_30d"] == 3
+    assert len(señal["headlines"]) == 3
+
+
+@freeze_time("2026-08-06 12:00:00")
+@responses.activate
+def test_sin_filtro_el_momentum_cuenta_todos_los_titulares_del_feed(muestra):
     # Dentro de 7d: 05-ago, 03-ago y 30-jul 13:00. Fuera por una hora: 30-jul 11:00.
     # Dentro de 30d: esos cuatro más el 17-jul. Fuera: 07-jul (30.2 d) y 14-mar.
     responses.get(RSS_RE, body=muestra("news_google_rss.xml"), status=200)
 
-    señal = news_source.momentum_signal("hábitos")
+    señal = news_source.momentum_signal("hábitos", only_on_topic=False)
 
     assert señal["last_7d"] == 3
     assert señal["last_30d"] == 5
@@ -155,7 +173,8 @@ def test_un_mes_despues_el_momentum_del_mismo_feed_se_apaga(muestra):
 def test_momentum_signal_devuelve_los_titulares_en_orden_de_recencia(muestra):
     responses.get(RSS_RE, body=muestra("news_google_rss.xml"), status=200)
 
-    titulares = news_source.momentum_signal("hábitos")["headlines"]
+    # Sin filtro: lo que se prueba es el orden de la lista, no qué entra en ella.
+    titulares = news_source.momentum_signal("hábitos", only_on_topic=False)["headlines"]
 
     assert titulares[0].startswith("Los hábitos que la neurociencia")
     assert titulares[-1].startswith("El viejo debate")
@@ -167,3 +186,86 @@ def test_momentum_signal_sin_titulares_es_senal_ausente_no_error(muestra):
     responses.get(RSS_RE, body=muestra("news_google_rss_vacio.xml"), status=200)
 
     assert news_source.momentum_signal("keyword sin cobertura") is None
+
+
+# ---------------------------------------------------------------------------
+# Filtro por tema
+#
+# Google News responde a cualquier consulta con lo que se le parece: titulares
+# que no hablan del tema entran igual y acaban convertidos en ideas de video.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("keyword", ["fantasía", "fantasia", "FANTASÍA"])
+@responses.activate
+def test_el_filtro_ignora_tildes_y_mayusculas_en_los_dos_sentidos(muestra, keyword):
+    # La muestra trae "Fantasia epica" (sin tilde) y "La fantasía medieval"
+    # (con ella): las tres grafías de la keyword tienen que traer las dos.
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    titulos = [i["title"] for i in news_source.headlines(keyword)]
+
+    assert titulos == [
+        "Fantasia epica: por que el genero no pasa de moda - El Pais",
+        "La fantasía medieval vuelve a la televisión - Clarín",
+    ]
+
+
+@responses.activate
+def test_una_keyword_de_varias_palabras_exige_la_frase_entera(muestra):
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    titulos = [i["title"] for i in news_source.headlines("hábitos de sueño")]
+
+    assert titulos == ["Habitos de sueño: lo que de verdad dice la ciencia - BBC News Mundo"]
+
+
+@responses.activate
+def test_la_keyword_no_casa_dentro_de_otra_palabra(muestra):
+    # "arte" está dentro de "cuarteto", pero ese titular no es del tema.
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    titulos = [i["title"] for i in news_source.headlines("arte")]
+
+    assert titulos == ["El arte de no hacer nada, según los daneses - Milenio"]
+
+
+@responses.activate
+def test_si_ningun_titular_es_del_tema_headlines_devuelve_lista_vacia(muestra):
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    assert news_source.headlines("criptomonedas") == []
+
+
+@freeze_time("2026-08-06 12:00:00")
+@responses.activate
+def test_sin_titulares_del_tema_el_momentum_es_none_y_nunca_cero(muestra):
+    # El caso más caro del proyecto: el feed responde con siete titulares
+    # recientes, pero ninguno del tema. Un {last_7d: 0} sería un dato falso que
+    # hunde el score; la ausencia se propaga como ausencia para que el scorer
+    # re-normalice los pesos.
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    señal = news_source.momentum_signal("criptomonedas")
+
+    assert señal is None
+
+
+@responses.activate
+def test_only_on_topic_false_devuelve_el_feed_entero_sin_filtrar(muestra):
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    items = news_source.headlines("criptomonedas", only_on_topic=False)
+
+    assert len(items) == 7
+
+
+@responses.activate
+def test_una_keyword_que_se_queda_vacia_al_normalizar_no_filtra_nada(muestra):
+    # Sin este guardarraíl, una keyword en blanco dejaría el feed sin titulares
+    # o los dejaría todos según cómo case la regex vacía; aquí se fija cuál es.
+    responses.get(RSS_RE, body=muestra("news_google_rss_filtro.xml"), status=200)
+
+    items = news_source.headlines("   ")
+
+    assert len(items) == 7

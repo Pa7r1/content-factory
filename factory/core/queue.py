@@ -250,6 +250,9 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         max_attempts=row["max_attempts"],
         run_after=row["run_after"],
         error=row["error"],
+        created_at=row["created_at"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
     )
 
 
