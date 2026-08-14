@@ -14,7 +14,7 @@ import responses
 
 from factory.core import quota
 from factory.research import youtube_source
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"

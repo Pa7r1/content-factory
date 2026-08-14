@@ -93,6 +93,12 @@ def _sin_clave_de_youtube(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _sin_clave_de_gemini(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Ningún test hereda una GOOGLE_AI_API_KEY real: gastaría cuota de verdad."""
+    monkeypatch.delenv("GOOGLE_AI_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _sin_red(monkeypatch: pytest.MonkeyPatch) -> None:
     """Red de seguridad: cualquier conexión saliente real revienta el test.
 
@@ -139,7 +145,8 @@ def sin_esperas(monkeypatch: pytest.MonkeyPatch) -> list[float]:
     Los tests de reintento comprueban CUÁNTO se habría esperado; esperarlo de
     verdad convertiría la suite en algo que nadie ejecuta.
     """
-    from factory.research import http_util, reddit_source
+    from factory.core import http_util
+    from factory.research import reddit_source
 
     esperas: list[float] = []
 

@@ -14,7 +14,7 @@ import responses
 from freezegun import freeze_time
 
 from factory.research import news_source
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 RSS_RE = re.compile(r"https://news\.google\.com/rss/search.*")
 

@@ -12,7 +12,7 @@ import urllib.parse
 from datetime import datetime, timezone
 from typing import Any
 
-from factory.research.http_util import SourceUnavailable, get_json
+from factory.core.http_util import SourceUnavailable, get_json
 
 logger = logging.getLogger(__name__)
 

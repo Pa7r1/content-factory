@@ -13,7 +13,7 @@ from typing import Any
 
 import feedparser
 
-from factory.research.http_util import SourceUnavailable, get_with_retries
+from factory.core.http_util import SourceUnavailable, get_with_retries
 
 logger = logging.getLogger(__name__)
 

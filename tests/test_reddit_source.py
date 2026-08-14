@@ -12,7 +12,7 @@ import pytest
 import responses
 
 from factory.research import reddit_source
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 TOP_RE = re.compile(r"https://www\.reddit\.com/r/[^/]+/top\.json.*")
 

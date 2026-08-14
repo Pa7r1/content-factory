@@ -9,7 +9,7 @@ import responses
 from freezegun import freeze_time
 
 from factory.research import wikipedia_source
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 SEARCH_URL = "https://es.wikipedia.org/w/api.php"
 PAGEVIEWS_RE = re.compile(r"https://wikimedia\.org/api/rest_v1/metrics/pageviews/.*")

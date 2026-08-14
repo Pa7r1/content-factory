@@ -13,8 +13,8 @@ import pytest
 import requests
 import responses
 
-from factory.research import http_util
-from factory.research.http_util import SourceUnavailable, get_json, get_with_retries
+from factory.core import http_util
+from factory.core.http_util import SourceUnavailable, get_json, get_with_retries
 
 URL = "https://api.ejemplo.test/datos"
 

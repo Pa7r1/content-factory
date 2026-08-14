@@ -40,7 +40,7 @@ from factory.research import (
     wikipedia_source,
     youtube_source,
 )
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 logger = logging.getLogger(__name__)
 

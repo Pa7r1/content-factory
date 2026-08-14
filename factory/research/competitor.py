@@ -18,7 +18,7 @@ from statistics import fmean
 from typing import Any
 
 from factory.core.db import get_conn, transaction
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 from factory.research import youtube_source
 
 logger = logging.getLogger(__name__)

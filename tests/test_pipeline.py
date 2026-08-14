@@ -25,7 +25,7 @@ from factory.research import (
     wikipedia_source,
     youtube_source,
 )
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 AHORA = "2026-08-06 07:30:00"
 

@@ -16,7 +16,7 @@ import re
 from typing import Any
 
 from factory.core import config, quota
-from factory.research.http_util import SourceUnavailable, get_json
+from factory.core.http_util import SourceUnavailable, get_json
 
 logger = logging.getLogger(__name__)
 

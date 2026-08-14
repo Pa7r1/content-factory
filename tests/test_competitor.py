@@ -16,7 +16,7 @@ import responses
 from freezegun import freeze_time
 
 from factory.research import competitor
-from factory.research.http_util import SourceUnavailable
+from factory.core.http_util import SourceUnavailable
 
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLIST_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
