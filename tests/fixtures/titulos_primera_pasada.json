@@ -1,0 +1,41 @@
+{
+  "_descripcion": "Titulos tal y como llegaron en la primera pasada real de investigacion, antes de que existiera la criba. Los cinco primeros son los que acabaron escritos en `ideas` como si fueran temas de video; el ultimo es el unico aprovechable, y entro dos veces por dos keywords distintas del mismo nicho. No inventar casos aqui: este fichero es el registro de lo que produjo el sistema en produccion.",
+  "titulos": [
+    {
+      "titulo": "BAD BUNNY - NADIE SABE (Visualizer)",
+      "util": false,
+      "motivo": "lanzamiento musical: 'Visualizer'",
+      "score_que_saco": 78.91
+    },
+    {
+      "titulo": "Myke Towers - Lo Logré (Video Oficial)",
+      "util": false,
+      "motivo": "lanzamiento musical: 'Video Oficial'",
+      "score_que_saco": 78.91
+    },
+    {
+      "titulo": "Mujer de Altar | Canción Cristiana de Adoración (Video Oficial)",
+      "util": false,
+      "motivo": "lanzamiento musical: 'Video Oficial'",
+      "score_que_saco": 70.4
+    },
+    {
+      "titulo": "#estoicismo #motivacion #inspirador",
+      "util": false,
+      "motivo": "cadena de hashtags de un Short, no es un tema",
+      "score_que_saco": null
+    },
+    {
+      "titulo": "If you don't have Discipline you are a nobody",
+      "util": false,
+      "motivo": "otro idioma: el canal es en español",
+      "score_que_saco": null
+    },
+    {
+      "titulo": "¿Cómo Afrontar Los Problemas?",
+      "util": true,
+      "motivo": "tema real del nicho; entro dos veces por dos keywords distintas",
+      "score_que_saco": null
+    }
+  ]
+}

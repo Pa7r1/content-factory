@@ -63,10 +63,17 @@ salen casi solo de titulares de noticias. Con ella el score empieza a significar
 Cuota gratuita: 10.000 unidades/día. El sistema se reserva 4.000 y corta al 80% (3.200),
 llevando la cuenta en la tabla `api_usage` — la ves en la pestaña *Sistema* del dashboard.
 
-### GOOGLE_AI_API_KEY
+### GOOGLE_AI_API_KEY — imprescindible desde el hito 1
 
-Gemini, para los guiones (hito 2). Gratis en
-[aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
+Gemini. Gratis en [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey).
+
+La investigación diaria la usa para **sintetizar los temas** de cada keyword: sin ella no se
+escribe ninguna idea (el sistema prefiere cero ideas a copiar títulos de vídeos ajenos, que es
+lo que hacía antes y llenaba el ranking de reguetón). El motivo queda en la tabla
+`research_log`. También la usarán los guiones del hito 2.
+
+Presupuesto: 200 peticiones/día con corte al 80% (160). Una pasada completa de los 3 nichos
+son 19 peticiones, y se reservan 38 porque cada generación puede reintentar una vez.
 
 ## Requisitos
 

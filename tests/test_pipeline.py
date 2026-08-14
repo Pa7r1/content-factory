@@ -1,13 +1,23 @@
 """Orquestador `research_daily`: de keywords semilla a ideas puntuadas en la base.
 
-Las cuatro fuentes se falsean a nivel de módulo (cada una tiene su propio
-fichero de tests contra HTTP real interceptado). Lo que se prueba aquí es lo que
-el pipeline añade encima: aislamiento por fuente, motivo de cada señal ausente,
-temas concretos, dedupe y respeto a lo que el humano ya decidió.
+Las cuatro fuentes y el LLM se falsean a nivel de módulo (cada uno tiene su
+propio fichero de tests contra HTTP interceptado). Lo que se prueba aquí es lo
+que el pipeline añade encima: aislamiento por fuente, motivo de cada señal
+ausente, síntesis de temas propios, dedupe, bitácora y respeto a lo que el
+humano ya decidió.
+
+Las dos invariantes que gobiernan este fichero:
+
+1. **El LLM decide de qué trata la idea, no cuánto vale.** El score sale de las
+   señales medidas y nada de lo que devuelva el modelo lo toca.
+2. **Si el LLM no está, esa keyword no produce ideas.** Nunca se cae de vuelta a
+   copiar títulos ajenos: cero ideas es un resultado aceptable, una idea basura
+   ya escrita en la base no lo es.
 """
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sqlite3
@@ -17,7 +27,9 @@ import pytest
 import responses
 from freezegun import freeze_time
 
+from factory.core import llm
 from factory.core.models import Job
+from factory.core.quota import QuotaExceeded
 from factory.research import (
     news_source,
     pipeline,
@@ -40,13 +52,14 @@ SETTINGS = {
         "pruebas": {
             "name": "Pruebas",
             "language": "es",
+            "tone": "calmado, reflexivo",
             "keywords": ["hábitos"],
             "subreddits": ["DesarrolloPersonal"],
         }
     },
     "score_weights": {"demand": 0.35, "competition": 0.30, "evergreen": 0.20, "cpm": 0.15},
     "cpm_by_niche": {"pruebas": 4.0},
-    "quotas": {"youtube": {"daily_budget": 4000}},
+    "quotas": {"youtube": {"daily_budget": 4000}, "gemini": {"daily_budget": 200}},
     "schedule": {"research_daily": "07:30", "fetch_metrics": "09:00"},
     "queue": {"poll_interval_seconds": 2, "max_attempts": 3},
 }
@@ -103,8 +116,75 @@ POSTS_REDDIT = [
     {"title": "Nada que ver con el tema", "ups": 10, "num_comments": 1},
 ]
 
+# Lo que devuelve el LLM cuando todo va bien: temas PROPIOS, no los títulos de
+# arriba. Ninguno se parece a un video de la lista, que es justo el punto.
+TEMAS = {
+    "temas": [
+        {
+            "titulo": "Por qué tus hábitos se rompen en la tercera semana",
+            "angulo": "Qué pasa cuando se acaba la motivación inicial",
+            "formato": "educativo",
+        },
+        {
+            "titulo": "La rutina de las cinco de la mañana, sin la mística",
+            "angulo": "Qué queda del método cuando se le quita el marketing",
+            "formato": "storytelling",
+        },
+        {
+            "titulo": "Tres señales de que tu sistema de hábitos no aguanta",
+            "angulo": "Los avisos que aparecen antes de abandonar",
+            "formato": "top_n",
+        },
+    ]
+}
+TITULOS_DEL_LLM = [tema["titulo"] for tema in TEMAS["temas"]]
+TITULOS_AJENOS = [
+    "El hábito de levantarse temprano",
+    "Por qué fracasan tus hábitos",
+    "Un estudio desmonta la regla de los 21 días",
+    "Otro titular cualquiera",
+]
+
 SCORE_COMPLETO = 79.36        # calculado en test_scorer con estas mismas señales
 SCORE_SIN_YOUTUBE = 85.63
+
+
+class DobleDelLlm:
+    """Doble de `llm.generate_json` que registra los prompts que recibe.
+
+    Se falsea el cliente de `core/llm.py` entero, no `_synthesize_topics`: así lo
+    que se prueba sigue siendo el código del pipeline (prompt, criba de la
+    respuesta, escritura) y no el doble.
+    """
+
+    def __init__(self) -> None:
+        self._respuesta: Any = copy.deepcopy(TEMAS)
+        self.prompts: list[str] = []
+        self.sistemas: list[str | None] = []
+
+    def responde(self, respuesta: Any) -> None:
+        """Fija lo que devolverá el modelo: un valor, o una función del prompt."""
+        self._respuesta = respuesta
+
+    def falla(self, excepcion: Exception) -> None:
+        self._respuesta = excepcion
+
+    def generate_json(self, prompt: str, *, system: str | None = None, **kwargs: Any) -> Any:
+        self.prompts.append(prompt)
+        self.sistemas.append(system)
+        if isinstance(self._respuesta, Exception):
+            raise self._respuesta
+        if callable(self._respuesta):
+            return self._respuesta(prompt)
+        return copy.deepcopy(self._respuesta)
+
+
+@pytest.fixture
+def llm_falso(monkeypatch: pytest.MonkeyPatch) -> DobleDelLlm:
+    """Instala el doble del LLM. Los tests que NO lo piden usan el módulo real."""
+    doble = DobleDelLlm()
+    monkeypatch.setattr(llm, "generate_json", doble.generate_json)
+    return doble
 
 
 @pytest.fixture
@@ -149,21 +229,147 @@ def _detalles(fila: sqlite3.Row) -> dict[str, Any]:
     return json.loads(fila["score_details"])
 
 
+def _bitacora(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    return list(conn.execute("SELECT * FROM research_log ORDER BY id").fetchall())
+
+
+def _motivos(fila: sqlite3.Row) -> dict[str, str]:
+    return json.loads(fila["reasons"])
+
+
+def _busqueda_con(titulos: list[str]) -> list[dict[str, Any]]:
+    """Resultados de search.list con los títulos que se le pasen."""
+    return [
+        {
+            "video_id": f"v{i}",
+            "title": titulo,
+            "channel_id": f"c{i}",
+            "channel_title": "Un canal",
+            "published_at": "2025-08-06T07:30:00Z",
+        }
+        for i, titulo in enumerate(titulos)
+    ]
+
+
+def _detalles_con(titulos: list[str]) -> dict[str, dict[str, Any]]:
+    """Respuesta de videos.list para los mismos títulos."""
+    return {
+        f"v{i}": {
+            "title": titulo,
+            "channel_id": f"c{i}",
+            "published_at": "2025-08-06T07:30:00Z",
+            "views": 1_000,
+            "likes": 10,
+            "duration_sec": 600,
+        }
+        for i, titulo in enumerate(titulos)
+    }
+
+
 # ---------------------------------------------------------------------------
-# Pasada feliz
+# Pasada feliz: el LLM propone temas propios
 # ---------------------------------------------------------------------------
 
 
 @freeze_time(AHORA)
-def test_una_pasada_escribe_una_idea_por_tema_concreto(conn, entorno):
+def test_una_pasada_escribe_una_idea_por_tema_del_llm(conn, entorno, llm_falso):
     escritas = pipeline.research_niche("pruebas")
 
-    assert escritas == 3  # 2 temas de YouTube + 1 titular de News
-    assert [f["source"] for f in _ideas(conn)] == ["youtube", "youtube", "news"]
+    assert escritas == 3
+    assert [f["title"] for f in _ideas(conn)] == TITULOS_DEL_LLM
 
 
 @freeze_time(AHORA)
-def test_las_ideas_llevan_el_score_y_sus_componentes(conn, entorno):
+def test_las_ideas_no_son_los_titulos_ajenos_que_se_midieron(conn, entorno, llm_falso):
+    # El fallo original: se copiaba el título de otro canal como idea propia.
+    pipeline.research_niche("pruebas")
+
+    titulos = [f["title"] for f in _ideas(conn)]
+    assert [t for t in TITULOS_AJENOS if t in titulos] == []
+
+
+@freeze_time(AHORA)
+def test_la_idea_registra_que_la_escribio_el_modelo_y_cual(conn, entorno, llm_falso):
+    pipeline.research_niche("pruebas")
+
+    fila = _ideas(conn)[0]
+    assert fila["source"] == "llm"
+    assert _detalles(fila)["topic"]["model"] == llm.MODEL
+
+
+@freeze_time(AHORA)
+def test_el_angulo_del_tema_se_guarda_para_el_guion(conn, entorno, llm_falso):
+    pipeline.research_niche("pruebas")
+
+    topic = _detalles(_ideas(conn)[0])["topic"]
+    assert topic["angle"] == "Qué pasa cuando se acaba la motivación inicial"
+
+
+@freeze_time(AHORA)
+def test_el_formato_sugerido_por_el_modelo_se_guarda(conn, entorno, llm_falso):
+    pipeline.research_niche("pruebas")
+
+    assert [f["suggested_format"] for f in _ideas(conn)] == [
+        "educativo", "storytelling", "top_n",
+    ]
+
+
+@pytest.mark.parametrize("formato", ["videoclip", "", None, 7, "EDUCATIVO "])
+@freeze_time(AHORA)
+def test_un_formato_que_el_esquema_no_acepta_no_se_guarda(
+    conn, entorno, llm_falso, formato
+):
+    # 'EDUCATIVO ' sí es válido (se normaliza); el resto no puede grabarse o el
+    # video que salga de la idea no se podrá producir.
+    llm_falso.responde({"temas": [{**TEMAS["temas"][0], "formato": formato}]})
+
+    pipeline.research_niche("pruebas")
+
+    esperado = "educativo" if formato == "EDUCATIVO " else None
+    assert _ideas(conn)[0]["suggested_format"] == esperado
+
+
+@freeze_time(AHORA)
+def test_un_tema_sin_angulo_se_escribe_igual(conn, entorno, llm_falso):
+    llm_falso.responde({"temas": [{"titulo": TITULOS_DEL_LLM[0]}]})
+
+    pipeline.research_niche("pruebas")
+
+    assert _detalles(_ideas(conn)[0])["topic"]["angle"] is None
+
+
+@freeze_time(AHORA)
+def test_el_titulo_del_modelo_se_guarda_limpio_para_la_pc_de_produccion(
+    conn, entorno, llm_falso
+):
+    llm_falso.responde(
+        {"temas": [{"titulo": "Por qué tus hábitos 🔥 se rompen en la tercera semana"}]}
+    )
+
+    pipeline.research_niche("pruebas")
+
+    titulo = _ideas(conn)[0]["title"]
+    assert titulo == "Por qué tus hábitos se rompen en la tercera semana"
+    titulo.encode("cp1252")
+
+
+@freeze_time(AHORA)
+def test_las_ideas_nacen_en_estado_new_con_su_nicho_y_keyword(conn, entorno, llm_falso):
+    pipeline.research_niche("pruebas")
+
+    for fila in _ideas(conn):
+        assert fila["status"] == "new"
+        assert fila["niche"] == "pruebas"
+        assert fila["keyword"] == "hábitos"
+
+
+# ---------------------------------------------------------------------------
+# El score sale de las señales medidas, nunca del modelo
+# ---------------------------------------------------------------------------
+
+
+@freeze_time(AHORA)
+def test_las_ideas_llevan_el_score_y_sus_componentes(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
 
     fila = _ideas(conn)[0]
@@ -175,52 +381,41 @@ def test_las_ideas_llevan_el_score_y_sus_componentes(conn, entorno):
 
 
 @freeze_time(AHORA)
-def test_todos_los_temas_de_una_keyword_comparten_su_score(conn, entorno):
+def test_todos_los_temas_de_una_keyword_comparten_su_score(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
 
     assert {f["score"] for f in _ideas(conn)} == {SCORE_COMPLETO}
 
 
 @freeze_time(AHORA)
-def test_los_temas_de_youtube_salen_ordenados_por_outlier_ratio(conn, entorno):
-    # v2 (5000 vistas) se salió más de la media del top que v1 (1000).
+def test_lo_que_el_modelo_diga_del_valor_del_tema_no_toca_el_score(
+    conn, entorno, llm_falso
+):
+    # El modelo decide DE QUÉ trata la idea; cuánto vale lo miden las fuentes.
+    llm_falso.responde(
+        {
+            "temas": [
+                {
+                    "titulo": TITULOS_DEL_LLM[0],
+                    "formato": "educativo",
+                    "score": 100,
+                    "demand": 1.0,
+                    "competition": 1.0,
+                }
+            ]
+        }
+    )
+
     pipeline.research_niche("pruebas")
 
-    de_youtube = [f for f in _ideas(conn) if f["source"] == "youtube"]
-    assert de_youtube[0]["title"] == "Por qué fracasan tus hábitos 🔥"
-    assert _detalles(de_youtube[0])["topic"]["outlier_ratio"] == pytest.approx(1.67, abs=0.01)
-
-
-@freeze_time(AHORA)
-def test_al_titular_de_news_se_le_quita_el_medio_y_se_marca_como_noticias(conn, entorno):
-    pipeline.research_niche("pruebas")
-
-    fila = [f for f in _ideas(conn) if f["source"] == "news"][0]
-    assert fila["title"] == "Un estudio desmonta la regla de los 21 días"
-    assert fila["suggested_format"] == "noticias"
-
-
-@freeze_time(AHORA)
-def test_los_titulos_llegan_normalizados_sin_espacios_sobrantes(conn, entorno):
-    pipeline.research_niche("pruebas")
-
-    titulos = [f["title"] for f in _ideas(conn)]
-    assert "El hábito de levantarse temprano" in titulos
-
-
-@freeze_time(AHORA)
-def test_las_ideas_nacen_en_estado_new_con_su_nicho_y_keyword(conn, entorno):
-    pipeline.research_niche("pruebas")
-
-    for fila in _ideas(conn):
-        assert fila["status"] == "new"
-        assert fila["niche"] == "pruebas"
-        assert fila["keyword"] == "hábitos"
+    fila = _ideas(conn)[0]
+    assert fila["score"] == SCORE_COMPLETO
+    assert fila["demand"] == pytest.approx(0.7532, abs=1e-4)
 
 
 @freeze_time(AHORA)
 def test_score_details_guarda_las_senales_crudas_para_poder_explicar_el_numero(
-    conn, entorno
+    conn, entorno, llm_falso
 ):
     pipeline.research_niche("pruebas")
 
@@ -235,11 +430,271 @@ def test_score_details_guarda_las_senales_crudas_para_poder_explicar_el_numero(
 
 
 @freeze_time(AHORA)
-def test_score_details_guarda_los_pesos_con_los_que_se_calculo(conn, entorno):
+def test_score_details_guarda_los_pesos_con_los_que_se_calculo(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
 
     detalles = _detalles(_ideas(conn)[0])
     assert detalles["weights_used"] == SETTINGS["score_weights"]
+
+
+@freeze_time(AHORA)
+def test_score_details_guarda_el_material_que_vio_el_modelo(conn, entorno, llm_falso):
+    # Sin esto no hay forma de responder "¿de dónde salió esta idea?".
+    pipeline.research_niche("pruebas")
+
+    material = _detalles(_ideas(conn)[0])["material"]
+    assert material["video_titles"] == [
+        "Por qué fracasan tus hábitos",
+        "El hábito de levantarse temprano",
+    ]
+    assert material["wikipedia_article"] == "Hábito (psicología)"
+
+
+# ---------------------------------------------------------------------------
+# Qué material se le enseña al modelo
+# ---------------------------------------------------------------------------
+
+
+@freeze_time(AHORA)
+def test_el_prompt_lleva_el_material_medido_y_no_solo_la_keyword(
+    conn, entorno, llm_falso
+):
+    pipeline.research_niche("pruebas")
+
+    prompt = llm_falso.prompts[0]
+    assert "Por qué fracasan tus hábitos" in prompt
+    assert "Un estudio desmonta la regla de los 21 días" in prompt
+    assert "Hábito (psicología)" in prompt
+    assert "hábitos" in prompt
+
+
+@freeze_time(AHORA)
+def test_los_titulares_llegan_al_prompt_sin_la_firma_del_medio(
+    conn, entorno, llm_falso
+):
+    pipeline.research_niche("pruebas")
+
+    assert "- El País" not in llm_falso.prompts[0]
+
+
+@freeze_time(AHORA)
+def test_la_basura_del_corpus_real_no_llega_al_prompt(conn, entorno, llm_falso, muestra):
+    corpus = muestra("titulos_primera_pasada.json")["titulos"]
+    titulos = [caso["titulo"] for caso in corpus]
+    entorno(
+        search=lambda *a, **k: _busqueda_con(titulos),
+        details=lambda ids: _detalles_con(titulos),
+        channels=lambda ids: {},
+        news=lambda kw: None,
+    )
+
+    pipeline.research_niche("pruebas")
+
+    prompt = llm_falso.prompts[0]
+    for caso in corpus:
+        esta = caso["titulo"] in prompt
+        assert esta is caso["util"], f"{caso['titulo']!r}: {caso['motivo']}"
+
+
+@freeze_time(AHORA)
+def test_sin_material_de_ninguna_fuente_no_se_gasta_una_llamada_al_modelo(
+    conn, entorno, llm_falso
+):
+    entorno(search=lambda *a, **k: [], news=lambda kw: None, wiki=lambda kw: None)
+
+    escritas = pipeline.research_niche("pruebas")
+
+    assert llm_falso.prompts == []
+    assert escritas == 0
+    assert _motivos(_bitacora(conn)[0])["llm"] == (
+        "ninguna fuente dio material para sintetizar temas"
+    )
+
+
+# ---------------------------------------------------------------------------
+# El LLM caído: cero ideas, jamás un título ajeno
+# ---------------------------------------------------------------------------
+
+
+@freeze_time(AHORA)
+def test_sin_clave_de_gemini_la_keyword_no_produce_ninguna_idea(conn, entorno):
+    # Sin doble: el módulo real lanza SourceUnavailable porque no hay clave.
+    # El nicho tiene una sola keyword, así que "el modelo falló en esta" es
+    # tambien "no respondió en ninguna": el job debe fallar y verse.
+    with pytest.raises(RuntimeError, match="no respondió en ninguna"):
+        pipeline.research_niche("pruebas")
+
+    assert _ideas(conn) == []
+    assert "GOOGLE_AI_API_KEY" in _motivos(_bitacora(conn)[0])["llm"]
+
+
+@pytest.mark.parametrize(
+    ("fallo", "motivo_esperado"),
+    [
+        (SourceUnavailable("gemini-2.5-flash: la respuesta no es JSON"), "no es JSON"),
+        (SourceUnavailable("gemini-2.5-flash: respuesta sin candidatos (SAFETY)"), "SAFETY"),
+        (QuotaExceeded("gemini: 160 + 2 unidades superaría el tope"), "QuotaExceeded"),
+        (RuntimeError("un fallo que nadie previó"), "error inesperado"),
+    ],
+    ids=["json_ilegible", "bloqueado", "sin_cuota", "bug"],
+)
+@freeze_time(AHORA)
+def test_si_el_modelo_no_responde_no_se_escribe_nada_y_el_motivo_queda_en_la_base(
+    conn, entorno, llm_falso, fallo, motivo_esperado
+):
+    llm_falso.falla(fallo)
+
+    # Una sola keyword en el nicho: si el modelo no responde ahí, no responde
+    # en ninguna, y eso tiene que fallar en vez de terminar 'done' en silencio.
+    with pytest.raises(RuntimeError, match="no respondió en ninguna"):
+        pipeline.research_niche("pruebas")
+
+    assert _ideas(conn) == []
+    assert motivo_esperado in _motivos(_bitacora(conn)[0])["llm"]
+
+
+@freeze_time(AHORA)
+def test_con_el_modelo_caido_no_se_cae_de_vuelta_a_copiar_titulos_ajenos(
+    conn, entorno, llm_falso
+):
+    llm_falso.falla(SourceUnavailable("gemini-2.5-flash: agotados 2 intentos"))
+
+    with pytest.raises(RuntimeError, match="no respondió en ninguna"):
+        pipeline.research_niche("pruebas")
+
+    # Lo que importa: ni un solo título del material acabó en la base.
+    assert _ideas(conn) == []
+
+
+@pytest.mark.parametrize(
+    "respuesta",
+    [
+        {},
+        [],
+        "una frase suelta",
+        {"temas": "no es una lista"},
+        {"temas": [{"angulo": "sin titulo"}]},
+        {"temas": ["un string en vez de un objeto"]},
+        {"temas": [{"titulo": 7}]},
+        None,
+    ],
+    ids=["vacio", "lista_vacia", "texto", "temas_no_lista", "sin_titulo",
+         "item_no_objeto", "titulo_no_texto", "nulo"],
+)
+@freeze_time(AHORA)
+def test_una_respuesta_con_otra_forma_no_escribe_ninguna_idea(
+    conn, entorno, llm_falso, respuesta
+):
+    llm_falso.responde(respuesta)
+
+    escritas = pipeline.research_niche("pruebas")
+
+    assert escritas == 0
+    assert _ideas(conn) == []
+
+
+@freeze_time(AHORA)
+def test_un_tema_que_no_pasa_la_criba_no_llega_a_la_base(conn, entorno, llm_falso):
+    llm_falso.responde(
+        {
+            "temas": [
+                {"titulo": "Myke Towers - Lo Logré (Video Oficial)"},
+                {"titulo": "corto"},
+                {"titulo": "Un tema que sí sirve para el canal"},
+            ]
+        }
+    )
+
+    pipeline.research_niche("pruebas")
+
+    assert [f["title"] for f in _ideas(conn)] == ["Un tema que sí sirve para el canal"]
+
+
+@freeze_time(AHORA)
+def test_si_ningun_tema_pasa_la_criba_el_motivo_queda_registrado(
+    conn, entorno, llm_falso
+):
+    llm_falso.responde({"temas": [{"titulo": "Myke Towers - Lo Logré (Video Oficial)"}]})
+
+    pipeline.research_niche("pruebas")
+
+    assert _motivos(_bitacora(conn)[0])["llm"] == (
+        "el modelo respondió pero ningún tema pasó la criba"
+    )
+
+
+@freeze_time(AHORA)
+def test_no_se_escriben_mas_temas_de_los_permitidos_por_keyword(
+    conn, entorno, llm_falso
+):
+    llm_falso.responde(
+        {"temas": [{"titulo": f"Un tema cualquiera del canal numero {i}"} for i in range(9)]}
+    )
+
+    pipeline.research_niche("pruebas")
+
+    assert len(_ideas(conn)) == pipeline.IDEAS_PER_KEYWORD
+
+
+@freeze_time(AHORA)
+def test_el_job_no_falla_porque_ninguna_keyword_produzca_ideas(
+    conn, settings_falsas, fuentes, llm_falso
+):
+    # Escribir cero ideas es normal cuando el humano ya las descartó todas:
+    # el modelo respondió y las fuentes se sondearon, simplemente no hay nada
+    # nuevo que proponer. Eso NO es un fallo y el job debe terminar bien.
+    tres = json.loads(json.dumps(SETTINGS))
+    tres["niches"]["pruebas"]["keywords"] = ["uno", "dos", "tres"]
+    settings_falsas(tres)
+    pipeline.research_niche("pruebas")
+    conn.execute("UPDATE ideas SET status = 'rejected'")
+
+    escritas = pipeline.research_niche("pruebas")
+
+    assert escritas == 0
+    assert len(_bitacora(conn)) == 6  # tres keywords por pasada, dos pasadas
+    assert {f["status"] for f in _ideas(conn)} == {"rejected"}
+
+
+# ---------------------------------------------------------------------------
+# La bitácora: por qué esta keyword no propuso nada hoy
+# ---------------------------------------------------------------------------
+
+
+@freeze_time(AHORA)
+def test_cada_keyword_sondeada_deja_su_fila_en_la_bitacora(conn, entorno, llm_falso):
+    pipeline.research_niche("pruebas")
+
+    fila = _bitacora(conn)[0]
+    assert fila["niche"] == "pruebas"
+    assert fila["keyword"] == "hábitos"
+    assert fila["score"] == SCORE_COMPLETO
+    assert fila["ideas_written"] == 3
+    assert _motivos(fila) == {}
+
+
+@freeze_time(AHORA)
+def test_la_medicion_se_conserva_aunque_la_keyword_no_produzca_ideas(
+    conn, entorno, llm_falso
+):
+    # Antes la medición viajaba dentro de la idea; sin idea se perdía entera.
+    llm_falso.falla(SourceUnavailable("gemini-2.5-flash: agotados 2 intentos"))
+
+    with pytest.raises(RuntimeError, match="no respondió en ninguna"):
+        pipeline.research_niche("pruebas")
+
+    fila = _bitacora(conn)[0]
+    assert fila["score"] == SCORE_COMPLETO
+    assert fila["ideas_written"] == 0
+
+
+@freeze_time(AHORA)
+def test_la_bitacora_recoge_el_motivo_de_cada_senal_ausente(conn, entorno, llm_falso):
+    entorno(wiki=lambda kw: None)
+
+    pipeline.research_niche("pruebas")
+
+    assert "wikipedia" in _motivos(_bitacora(conn)[0])
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +704,7 @@ def test_score_details_guarda_los_pesos_con_los_que_se_calculo(conn, entorno):
 
 @freeze_time(AHORA)
 def test_youtube_caido_deja_la_senal_ausente_con_su_motivo_y_no_hunde_el_score(
-    conn, entorno
+    conn, entorno, llm_falso
 ):
     def caido(*a, **k):
         raise SourceUnavailable("HTTP 503 (no transitorio)", status=503)
@@ -258,7 +713,7 @@ def test_youtube_caido_deja_la_senal_ausente_con_su_motivo_y_no_hunde_el_score(
 
     escritas = pipeline.research_niche("pruebas")
 
-    assert escritas == 1  # solo queda el tema de News
+    assert escritas == 3  # el modelo sigue teniendo titulares y wikipedia
     detalles = _detalles(_ideas(conn)[0])
     assert "SourceUnavailable" in detalles["missing_reasons"]["youtube"]
     assert "503" in detalles["missing_reasons"]["youtube"]
@@ -273,7 +728,7 @@ def test_youtube_caido_deja_la_senal_ausente_con_su_motivo_y_no_hunde_el_score(
 )
 @freeze_time(AHORA)
 def test_cualquier_fuente_caida_queda_registrada_por_su_nombre(
-    conn, entorno, fuente, nombre
+    conn, entorno, llm_falso, fuente, nombre
 ):
     def caido(*a, **k):
         raise SourceUnavailable("la fuente no responde")
@@ -288,7 +743,7 @@ def test_cualquier_fuente_caida_queda_registrada_por_su_nombre(
 
 @freeze_time(AHORA)
 def test_una_fuente_que_revienta_de_forma_inesperada_tampoco_tumba_la_pasada(
-    conn, entorno
+    conn, entorno, llm_falso
 ):
     def bug(*a, **k):
         raise KeyError("un campo que el parser daba por seguro")
@@ -303,7 +758,9 @@ def test_una_fuente_que_revienta_de_forma_inesperada_tampoco_tumba_la_pasada(
 
 
 @freeze_time(AHORA)
-def test_una_fuente_sin_datos_de_la_keyword_se_distingue_de_una_caida(conn, entorno):
+def test_una_fuente_sin_datos_de_la_keyword_se_distingue_de_una_caida(
+    conn, entorno, llm_falso
+):
     entorno(wiki=lambda kw: None)
 
     pipeline.research_niche("pruebas")
@@ -315,7 +772,9 @@ def test_una_fuente_sin_datos_de_la_keyword_se_distingue_de_una_caida(conn, ento
 
 
 @freeze_time(AHORA)
-def test_reddit_caido_deja_sin_senal_a_todas_las_keywords_del_nicho(conn, entorno):
+def test_reddit_caido_deja_sin_senal_a_todas_las_keywords_del_nicho(
+    conn, entorno, llm_falso
+):
     def caido(subs):
         raise SourceUnavailable("ningún subreddit respondió")
 
@@ -331,7 +790,7 @@ def test_reddit_caido_deja_sin_senal_a_todas_las_keywords_del_nicho(conn, entorn
 @responses.activate
 @freeze_time(AHORA)
 def test_reddit_sin_posts_deja_la_senal_ausente_y_no_la_cuenta_como_cero(
-    conn, entorno, sin_esperas
+    conn, entorno, llm_falso, sin_esperas
 ):
     # Regresión de operación: Reddit contestaba 200 con `children` vacío (sub
     # vacío o cuerpo de error bajo rate-limit) y la señal entraba valiendo 0,
@@ -354,7 +813,7 @@ def test_reddit_sin_posts_deja_la_senal_ausente_y_no_la_cuenta_como_cero(
 @responses.activate
 @freeze_time(AHORA)
 def test_sin_la_senal_de_reddit_el_peso_se_reparte_en_vez_de_contarla_como_cero(
-    conn, entorno, sin_esperas
+    conn, entorno, llm_falso, sin_esperas
 ):
     # La demanda pasa a ser la media ponderada SOLO de las señales que llegaron
     # (views 0.5 + momentum 0.3, re-escaladas sobre 0.8). Contar la ausencia
@@ -375,7 +834,7 @@ def test_sin_la_senal_de_reddit_el_peso_se_reparte_en_vez_de_contarla_como_cero(
 
 @freeze_time(AHORA)
 def test_un_nicho_sin_subreddits_configurados_lo_dice_sin_llamar_a_reddit(
-    conn, settings_falsas, fuentes
+    conn, settings_falsas, fuentes, llm_falso
 ):
     def no_deberia_llamarse(subs):
         raise AssertionError("no hay subreddits: no debería consultarse Reddit")
@@ -393,7 +852,7 @@ def test_un_nicho_sin_subreddits_configurados_lo_dice_sin_llamar_a_reddit(
 
 @freeze_time(AHORA)
 def test_un_nicho_sin_cpm_en_la_tabla_lo_registra_como_senal_ausente(
-    conn, settings_falsas, fuentes
+    conn, settings_falsas, fuentes, llm_falso
 ):
     sin_cpm = json.loads(json.dumps(SETTINGS))
     sin_cpm["cpm_by_niche"] = {}
@@ -406,30 +865,9 @@ def test_un_nicho_sin_cpm_en_la_tabla_lo_registra_como_senal_ausente(
     assert "cpm" in detalles["missing_signals"]
 
 
-# ---------------------------------------------------------------------------
-# La keyword como sonda
-# ---------------------------------------------------------------------------
-
-
 @freeze_time(AHORA)
-def test_sin_ningun_tema_concreto_se_graba_la_keyword_para_no_perder_la_medicion(
-    conn, entorno
-):
-    entorno(search=lambda *a, **k: [], news=lambda kw: None)
-
-    escritas = pipeline.research_niche("pruebas")
-
-    assert escritas == 1
-    fila = _ideas(conn)[0]
-    assert fila["title"] == "hábitos"
-    assert fila["source"] == "keyword"
-    assert fila["score"] is not None
-    assert "se guarda la sonda" in _detalles(fila)["topic"]["note"]
-
-
-@freeze_time(AHORA)
-def test_si_ninguna_fuente_responde_la_idea_sonda_se_graba_con_score_cero(
-    conn, settings_falsas, fuentes
+def test_si_ninguna_fuente_responde_queda_la_medicion_en_cero_y_ninguna_idea(
+    conn, settings_falsas, fuentes, llm_falso
 ):
     def caido(*a, **k):
         raise SourceUnavailable("todo abajo")
@@ -439,23 +877,23 @@ def test_si_ninguna_fuente_responde_la_idea_sonda_se_graba_con_score_cero(
 
     escritas = pipeline.research_niche("pruebas")
 
-    assert escritas == 1
-    fila = _ideas(conn)[0]
+    assert escritas == 0
+    assert _ideas(conn) == []
+    fila = _bitacora(conn)[0]
     assert fila["score"] == 0.0
-    assert fila["demand"] is None
-    assert len(_detalles(fila)["missing_signals"]) == 8
+    assert sorted(_motivos(fila)) == ["cpm", "llm", "news", "reddit", "wikipedia", "youtube"]
 
 
 @freeze_time(AHORA)
-def test_un_video_sin_detalles_no_cuenta_como_tema(conn, entorno):
+def test_un_video_sin_detalles_no_llega_al_prompt(conn, entorno, llm_falso):
     # videos.list a veces no devuelve un id que search.list sí traía.
     entorno(details=lambda ids: {"v1": DETALLES["v1"]})
 
     pipeline.research_niche("pruebas")
 
-    titulos = [f["title"] for f in _ideas(conn)]
-    assert "Por qué fracasan tus hábitos 🔥" not in titulos
-    assert "El hábito de levantarse temprano" in titulos
+    prompt = llm_falso.prompts[0]
+    assert "Por qué fracasan tus hábitos" not in prompt
+    assert "El hábito de levantarse temprano" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -464,7 +902,56 @@ def test_un_video_sin_detalles_no_cuenta_como_tema(conn, entorno):
 
 
 @freeze_time(AHORA)
-def test_dos_pasadas_actualizan_la_misma_idea_en_vez_de_duplicarla(conn, entorno):
+def test_dos_keywords_que_proponen_el_mismo_tema_escriben_una_sola_idea(
+    conn, settings_falsas, fuentes, llm_falso
+):
+    # Pasó en la primera pasada real: el mismo tema entró dos veces, con dos
+    # scores distintos, por dos keywords del mismo nicho.
+    dos = json.loads(json.dumps(SETTINGS))
+    dos["niches"]["pruebas"]["keywords"] = ["hábitos", "disciplina"]
+    settings_falsas(dos)
+
+    def segun_keyword(prompt: str) -> dict[str, Any]:
+        titulo = (
+            "¿Cómo Afrontar Los Problemas?"
+            if "disciplina" in prompt
+            else "Como afrontar los problemas"
+        )
+        return {"temas": [{"titulo": titulo}]}
+
+    llm_falso.responde(segun_keyword)
+
+    escritas = pipeline.research_niche("pruebas")
+
+    assert escritas == 1
+    assert [f["title"] for f in _ideas(conn)] == ["Como afrontar los problemas"]
+    assert _motivos(_bitacora(conn)[1])["dedupe"] == (
+        "todos los temas ya se habían propuesto en esta pasada"
+    )
+
+
+@freeze_time(AHORA)
+def test_el_mismo_tema_repetido_en_una_respuesta_entra_una_sola_vez(
+    conn, entorno, llm_falso
+):
+    llm_falso.responde(
+        {
+            "temas": [
+                {"titulo": "Como afrontar los problemas"},
+                {"titulo": "¿Cómo Afrontar Los Problemas?"},
+            ]
+        }
+    )
+
+    pipeline.research_niche("pruebas")
+
+    assert len(_ideas(conn)) == 1
+
+
+@freeze_time(AHORA)
+def test_dos_pasadas_actualizan_la_misma_idea_en_vez_de_duplicarla(
+    conn, entorno, llm_falso
+):
     pipeline.research_niche("pruebas")
     antes = [f["id"] for f in _ideas(conn)]
 
@@ -474,7 +961,9 @@ def test_dos_pasadas_actualizan_la_misma_idea_en_vez_de_duplicarla(conn, entorno
 
 
 @freeze_time(AHORA)
-def test_la_segunda_pasada_refresca_el_score_de_la_idea_existente(conn, entorno):
+def test_la_segunda_pasada_refresca_el_score_de_la_idea_existente(
+    conn, entorno, llm_falso
+):
     pipeline.research_niche("pruebas")
     conn.execute("UPDATE ideas SET score = 1.0")
 
@@ -484,7 +973,7 @@ def test_la_segunda_pasada_refresca_el_score_de_la_idea_existente(conn, entorno)
 
 
 @freeze_time(AHORA)
-def test_una_idea_rechazada_no_se_vuelve_a_proponer(conn, entorno):
+def test_una_idea_rechazada_no_se_vuelve_a_proponer(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
     conn.execute("UPDATE ideas SET status = 'rejected'")
 
@@ -496,7 +985,7 @@ def test_una_idea_rechazada_no_se_vuelve_a_proponer(conn, entorno):
 
 
 @freeze_time(AHORA)
-def test_una_idea_ya_usada_no_se_vuelve_a_proponer(conn, entorno):
+def test_una_idea_ya_usada_no_se_vuelve_a_proponer(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
     conn.execute("UPDATE ideas SET status = 'used'")
 
@@ -508,7 +997,7 @@ def test_una_idea_ya_usada_no_se_vuelve_a_proponer(conn, entorno):
 
 @pytest.mark.parametrize("estado", ["shortlisted", "approved"])
 @freeze_time(AHORA)
-def test_una_idea_que_el_humano_ya_movio_no_se_toca(conn, entorno, estado):
+def test_una_idea_que_el_humano_ya_movio_no_se_toca(conn, entorno, llm_falso, estado):
     pipeline.research_niche("pruebas")
     conn.execute("UPDATE ideas SET status = ?, score = 1.0", (estado,))
 
@@ -520,7 +1009,7 @@ def test_una_idea_que_el_humano_ya_movio_no_se_toca(conn, entorno, estado):
 
 
 @freeze_time(AHORA)
-def test_el_dedupe_es_por_nicho_keyword_y_titulo(conn, entorno):
+def test_el_dedupe_es_por_nicho_keyword_y_titulo(conn, entorno, llm_falso):
     pipeline.research_niche("pruebas")
     conn.execute("UPDATE ideas SET niche = 'otro_nicho'")
 
@@ -535,7 +1024,7 @@ def test_el_dedupe_es_por_nicho_keyword_y_titulo(conn, entorno):
 
 
 @freeze_time(AHORA)
-def test_el_handler_investiga_el_nicho_que_pide_el_payload(conn, entorno):
+def test_el_handler_investiga_el_nicho_que_pide_el_payload(conn, entorno, llm_falso):
     pipeline.handle_research_daily(Job(id=1, type="research_daily", payload={"niche": "pruebas"}))
 
     assert len(_ideas(conn)) == 3
@@ -543,7 +1032,7 @@ def test_el_handler_investiga_el_nicho_que_pide_el_payload(conn, entorno):
 
 @freeze_time(AHORA)
 def test_el_handler_sin_nicho_recorre_todos_los_configurados(
-    conn, settings_falsas, fuentes
+    conn, settings_falsas, fuentes, llm_falso
 ):
     dos_nichos = json.loads(json.dumps(SETTINGS))
     dos_nichos["niches"]["segundo"] = {
@@ -567,7 +1056,7 @@ def test_un_nicho_desconocido_en_el_payload_es_un_error_del_llamador(conn, entor
 
 @freeze_time(AHORA)
 def test_si_ninguna_keyword_se_puede_sondear_el_job_falla(
-    conn, settings_falsas, fuentes
+    conn, settings_falsas, fuentes, llm_falso
 ):
     # Pesos mal configurados: revienta dentro de cada keyword, no en una fuente.
     rotas = json.loads(json.dumps(SETTINGS))
@@ -582,7 +1071,7 @@ def test_si_ninguna_keyword_se_puede_sondear_el_job_falla(
 
 @freeze_time(AHORA)
 def test_una_keyword_rota_no_cancela_las_demas_del_nicho(
-    conn, settings_falsas, fuentes, monkeypatch
+    conn, settings_falsas, fuentes, llm_falso, monkeypatch
 ):
     dos_keywords = json.loads(json.dumps(SETTINGS))
     dos_keywords["niches"]["pruebas"]["keywords"] = ["rota", "hábitos"]
@@ -603,6 +1092,23 @@ def test_una_keyword_rota_no_cancela_las_demas_del_nicho(
     assert {f["keyword"] for f in _ideas(conn)} == {"hábitos"}
 
 
+@freeze_time(AHORA)
+def test_una_parada_pedida_deja_las_keywords_restantes_sin_sondear(
+    conn, settings_falsas, fuentes, llm_falso, monkeypatch
+):
+    # El worker pide parar (Ctrl-C, apagado de la PC): la pasada se corta sin
+    # dar el job por fallido, y no queda ninguna keyword a medio escribir.
+    tres = json.loads(json.dumps(SETTINGS))
+    tres["niches"]["pruebas"]["keywords"] = ["uno", "dos", "tres"]
+    settings_falsas(tres)
+    monkeypatch.setattr(pipeline, "should_stop", lambda: True)
+
+    escritas = pipeline.research_niche("pruebas")
+
+    assert escritas == 0
+    assert _bitacora(conn) == []
+
+
 def test_register_engancha_el_handler_al_worker():
     from factory.core.queue import JobWorker
 
@@ -615,7 +1121,7 @@ def test_register_engancha_el_handler_al_worker():
 
 @freeze_time(AHORA)
 def test_se_hace_una_pausa_entre_keywords_para_no_provocar_un_429(
-    conn, settings_falsas, fuentes, monkeypatch
+    conn, settings_falsas, fuentes, llm_falso, monkeypatch
 ):
     # Verificado en vivo: ~19 keywords seguidas hacen que es.wikipedia responda 429.
     esperas: list[float] = []
@@ -632,45 +1138,6 @@ def test_se_hace_una_pausa_entre_keywords_para_no_provocar_un_429(
 # ---------------------------------------------------------------------------
 # Utilidades puras
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("titular", "esperado"),
-    [
-        ("Un titular cualquiera - El País", "Un titular cualquiera"),
-        ("Un titular cualquiera - BBC News Mundo", "Un titular cualquiera"),
-        ("Sin medio detrás", "Sin medio detrás"),
-        ("Doble - guion - Infobae", "Doble - guion"),
-        (
-            "Titular - con un medio absurdamente largo que no puede ser un medio de verdad",
-            "Titular - con un medio absurdamente largo que no puede ser un medio de verdad",
-        ),
-        ("", ""),
-    ],
-)
-def test_strip_outlet_quita_la_firma_del_medio(titular, esperado):
-    assert pipeline._strip_outlet(titular) == esperado
-
-
-@pytest.mark.parametrize(
-    ("crudo", "esperado"),
-    [
-        ("  hola   mundo  ", "hola mundo"),
-        ("con\nsaltos\tde línea", "con saltos de línea"),
-        ("Traición ⚔️ y venganza", "Traición ⚔️ y venganza"),
-        ("", ""),
-    ],
-)
-def test_clean_title_normaliza_espacios_sin_perder_tildes_ni_emojis(crudo, esperado):
-    assert pipeline._clean_title(crudo) == esperado
-
-
-def test_clean_title_acota_la_longitud_del_titulo():
-    largo = "á" * 500
-
-    limpio = pipeline._clean_title(largo)
-
-    assert len(limpio) == pipeline.MAX_TITLE_CHARS
 
 
 @freeze_time(AHORA)

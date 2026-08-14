@@ -1,0 +1,29 @@
+{
+  "candidates": [
+    {
+      "content": {
+        "parts": [
+          {
+            "text": "{\"temas\": [{\"titulo\": \"Por qué tus hábitos se rompen en la tercera semana\", \"angulo\": \"Qué pasa en el cerebro cuando se acaba la motivación inicial\", \"formato\": \"educativo\"}]}"
+          }
+        ],
+        "role": "model"
+      },
+      "finishReason": "STOP",
+      "index": 0
+    }
+  ],
+  "usageMetadata": {
+    "promptTokenCount": 312,
+    "candidatesTokenCount": 74,
+    "totalTokenCount": 386,
+    "promptTokensDetails": [
+      {
+        "modality": "TEXT",
+        "tokenCount": 312
+      }
+    ]
+  },
+  "modelVersion": "gemini-2.5-flash",
+  "responseId": "ejemplo-de-respuesta-guardada"
+}

@@ -69,6 +69,12 @@ cpm_by_niche:
 quotas:
   youtube:
     daily_budget: 4000   # unidades de YouTube Data API v3 (el tope real es 10000)
+  gemini:
+    # Aquí la unidad es UNA PETICIÓN HTTP, que es lo que limita el free tier
+    # (peticiones por día). El cliente reserva el peor caso —2 peticiones por
+    # generación, porque un 429 reintentado son dos peticiones reales—, así que
+    # una pasada completa (19 keywords) reserva 38 y el corte efectivo son 160.
+    daily_budget: 200
 
 # Horarios de las tareas periódicas (hora local, HH:MM). El scheduler solo
 # encola; el worker ejecuta.

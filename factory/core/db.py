@@ -11,7 +11,9 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
+
+from factory.core import text
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +112,38 @@ def _rollback_quietly(conn: sqlite3.Connection) -> None:
 # ---------------------------------------------------------------------------
 # Migraciones. Cada entrada sube `PRAGMA user_version` en 1. Nunca se edita una
 # migración ya aplicada: los cambios de esquema posteriores son migraciones nuevas.
+#
+# Una migración es un script SQL o —cuando el dato a escribir no se puede
+# calcular en SQL— una función que recibe la conexión. Las dos corren dentro de
+# la misma transacción inmediata que sube `user_version`.
 # ---------------------------------------------------------------------------
 
-MIGRATIONS: list[str] = [
+Migration = str | Callable[[sqlite3.Connection], None]
+
+
+def _migracion_3_dedupe_key(conn: sqlite3.Connection) -> None:
+    """Añade `ideas.dedupe_key` y la rellena para las filas ya escritas.
+
+    Va en Python y no en SQL porque la clave quita tildes y puntuación, y el
+    `lower()` de SQLite solo baja el ASCII: calculada en SQL, "El efecto dominó"
+    y "El efecto domino" tendrían claves distintas, que es exactamente el
+    duplicado que la columna viene a impedir.
+    """
+    conn.executescript(
+        """
+        ALTER TABLE ideas ADD COLUMN dedupe_key TEXT;
+        CREATE INDEX idx_ideas_dedupe ON ideas (niche, dedupe_key);
+        """
+    )
+    filas = conn.execute("SELECT id, title FROM ideas").fetchall()
+    conn.executemany(
+        "UPDATE ideas SET dedupe_key = ? WHERE id = ?",
+        [(text.dedupe_key(titulo), idea_id) for idea_id, titulo in filas],
+    )
+    logger.info("dedupe_key calculada para %d ideas ya existentes", len(filas))
+
+
+MIGRATIONS: list[Migration] = [
     # --- Migración 1: esquema inicial completo -----------------------------
     """
     CREATE TABLE ideas (
@@ -254,6 +285,29 @@ MIGRATIONS: list[str] = [
     );
     CREATE INDEX idx_api_usage_api_day ON api_usage (api, day);
     """,
+    # --- Migración 2: bitácora de investigación ----------------------------
+    # Una fila por keyword sondeada. Existe porque una keyword que no produce
+    # ninguna idea (LLM caído, nada que pasara la criba, todo ya descartado por
+    # el humano) no deja rastro en `ideas`, y entonces "por qué hoy no propuso
+    # nada" solo se podría responder mirando el log de la PC de producción.
+    """
+    CREATE TABLE research_log (
+        id            INTEGER PRIMARY KEY,
+        niche         TEXT NOT NULL,
+        keyword       TEXT NOT NULL,
+        score         REAL,
+        ideas_written INTEGER NOT NULL DEFAULT 0,
+        reasons       TEXT,                       -- JSON {fuente: motivo}
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX idx_research_log_created ON research_log (created_at);
+    CREATE INDEX idx_research_log_niche   ON research_log (niche, keyword);
+    """,
+    # --- Migración 3: clave de deduplicación de ideas ----------------------
+    # Emparejar por título exacto valía cuando los títulos se copiaban de las
+    # fuentes; los escribe un LLM y nunca repite la cadena literal, así que lo
+    # que el humano rechazaba volvía al día siguiente reformulado.
+    _migracion_3_dedupe_key,
 ]
 
 
@@ -265,17 +319,25 @@ def migrate(conn: sqlite3.Connection | None = None) -> int:
     """
     conn = conn or get_conn()
     version = schema_version(conn)
-    for target, script in enumerate(MIGRATIONS, start=1):
+    for target, migracion in enumerate(MIGRATIONS, start=1):
         if version >= target:
             continue
         logger.info("Aplicando migración %d", target)
         # Con autocommit=True, executescript no emite ningún COMMIT implícito,
-        # así que el script y el user_version suben juntos, atómicamente.
+        # así que la migración y el user_version suben juntos, atómicamente.
         with transaction(conn):
-            conn.executescript(script)
+            _aplicar_migracion(conn, migracion)
             conn.execute(f"PRAGMA user_version = {target:d}")
         version = target
     return version
+
+
+def _aplicar_migracion(conn: sqlite3.Connection, migracion: Migration) -> None:
+    """Ejecuta una migración, sea un script SQL o un paso escrito en Python."""
+    if isinstance(migracion, str):
+        conn.executescript(migracion)
+        return
+    migracion(conn)
 
 
 def schema_version(conn: sqlite3.Connection) -> int:
