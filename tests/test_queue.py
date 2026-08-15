@@ -420,6 +420,57 @@ def test_un_handler_que_revienta_devuelve_el_job_a_la_cola_con_el_error(
     assert fila["attempts"] == 1
 
 
+# StopRequested vale una cosa u otra según el worker esté parando o no, y la
+# diferencia es la cota de ejecuciones del job: devolver el turno no gasta
+# intento y deja `run_after` a NULL, así que fuera del apagado —con el bucle sin
+# ninguna intención de salir— el job se reclamaría otra vez en la vuelta
+# siguiente, para siempre y sin nada que lo corte.
+
+
+def test_un_handler_que_se_retira_por_la_parada_devuelve_el_job_sin_gastar_intento(
+    conn: sqlite3.Connection,
+):
+    worker = JobWorker()
+
+    def se_retira(job: Job) -> None:
+        raise queue.StopRequested("parada pedida antes de llamar al modelo")
+
+    worker.register("research_daily", se_retira)
+    job_id = queue.enqueue("research_daily", max_attempts=3)
+    worker.stop()  # sin hilo arrancado, solo pide la parada
+
+    worker._process_one()
+
+    fila = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    assert fila["status"] == "pending"
+    assert fila["attempts"] == 0
+    assert fila["run_after"] is None  # nada que esperar: no ha fallado nada
+    assert "parada pedida" in fila["error"]
+
+
+def test_un_handler_que_se_retira_sin_parada_en_curso_gasta_intento_y_espera(
+    conn: sqlite3.Connection,
+):
+    # El worker NO está parando: solo el handler cree que sí. Sin esta
+    # distinción el job volvería gratis a la cola una y otra vez.
+    worker = JobWorker()
+
+    def se_retira(job: Job) -> None:
+        raise queue.StopRequested("me retiro por mi cuenta")
+
+    worker.register("research_daily", se_retira)
+    job_id = queue.enqueue("research_daily", max_attempts=3)
+    antes = _epoca(conn, "now")
+
+    worker._process_one()
+
+    fila = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    assert fila["status"] == "pending"  # le quedan 2 de 3 intentos
+    assert fila["attempts"] == 1
+    assert "StopRequested sin parada en curso" in fila["error"]
+    assert 30 <= _epoca(conn, fila["run_after"]) - antes <= 32
+
+
 def test_un_job_sin_handler_falla_sin_reintento(conn: sqlite3.Connection):
     # Reintentarlo no haría aparecer el handler: es gastar la cola en balde.
     worker = JobWorker()

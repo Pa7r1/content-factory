@@ -37,6 +37,10 @@ API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 MODEL = "gemini-2.5-flash"
 QUOTA_API = "gemini"
 
+# Timeout por defecto de una petición. Vale para las listas cortas de
+# `research/`; quien pida una respuesta larga (un guion entero) pasa el suyo,
+# porque un timeout aquí no aborta la generación: dispara un reintento que es
+# otra generación completa.
 TIMEOUT_SECONDS = 60.0
 MAX_ATTEMPTS = 2
 COST_PER_REQUEST = 1
@@ -63,6 +67,7 @@ def generate_text(
     system: str | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> str:
     """Texto generado por el modelo. Lanza `SourceUnavailable` si no lo hay."""
     return _generate(
@@ -70,6 +75,7 @@ def generate_text(
         system=system,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        timeout=timeout,
         json_mode=False,
     )
 
@@ -80,6 +86,7 @@ def generate_json(
     system: str | None = None,
     temperature: float = DEFAULT_TEMPERATURE,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> Any:
     """JSON generado por el modelo, ya decodificado.
 
@@ -93,6 +100,7 @@ def generate_json(
         system=system,
         temperature=temperature,
         max_output_tokens=max_output_tokens,
+        timeout=timeout,
         json_mode=True,
     )
     try:
@@ -107,6 +115,7 @@ def _generate(
     system: str | None,
     temperature: float,
     max_output_tokens: int,
+    timeout: float,
     json_mode: bool,
 ) -> str:
     """Reserva cuota, llama a `:generateContent` y devuelve el texto.
@@ -130,7 +139,7 @@ def _generate(
         f"{API_BASE}/{MODEL}:generateContent",
         _request_body(prompt, system, temperature, max_output_tokens, json_mode),
         headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        timeout=TIMEOUT_SECONDS,
+        timeout=timeout,
         max_attempts=MAX_ATTEMPTS,
         retry_delay_from_body=_retry_delay_seconds,
     )

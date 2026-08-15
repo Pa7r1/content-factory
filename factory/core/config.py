@@ -48,7 +48,12 @@ def niches() -> dict[str, Any]:
 
 def subreddits(niche: str) -> list[str]:
     """Subreddits configurados para sondear un nicho (lista vacía si no hay)."""
-    return list(niches()[niche].get("subreddits", []))
+    # `or []` y no un default del get, por lo mismo que en `script_format`: un
+    # `subreddits:` sin valor —lo que queda al borrar el último subreddit de un
+    # nicho— existe como clave y vale None, así que el default no se aplica y el
+    # list() reventaría. Y esto se llama fuera de `_try_source`, sin red debajo:
+    # el TypeError se llevaría por delante la investigación de todos los nichos.
+    return list(niches()[niche].get("subreddits") or [])
 
 
 def cpm_for_niche(niche: str) -> float | None:

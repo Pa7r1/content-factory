@@ -9,6 +9,10 @@ hace cada tipo de job, solo despacha.
 Dos garantías del worker, pensadas para una máquina desatendida: su hilo no
 puede morir por ninguna excepción, y al arrancar rescata los jobs que quedaron
 'running' cuando el proceso anterior se cortó (`requeue_stale_running`).
+
+Un handler dispone de dos excepciones para decir algo que el reintento por
+defecto no sabe: `PermanentFailure` ("esto no mejora reintentando") y
+`StopRequested` ("no he llegado a trabajar, devuélveme el turno").
 """
 
 from __future__ import annotations
@@ -21,12 +25,31 @@ from typing import Any, Callable
 
 from factory.core.db import close_conn, get_conn, transaction
 from factory.core.models import Job
+from factory.core.quota import QuotaExceeded
 
 logger = logging.getLogger(__name__)
 
 # Un handler recibe el job reclamado y hace el trabajo. Si lanza, el job falla
 # (y se reintenta hasta max_attempts con backoff).
 Handler = Callable[[Job], None]
+
+
+class PermanentFailure(RuntimeError):
+    """Fallo que reintentar no puede arreglar: el job pasa a 'failed' en el acto.
+
+    La lanza un handler cuando la causa es una decisión ya tomada —un humano
+    rechazó el video o la idea— y no un tropiezo. Reintentar contra una decisión
+    firme gasta cuota para volver a chocar con lo mismo.
+    """
+
+
+class StopRequested(RuntimeError):
+    """El handler se retiró porque se pidió la parada, sin haber hecho nada.
+
+    El job vuelve a 'pending' **sin consumir el intento**: no falló, se le quitó
+    el turno. Mismo criterio que `requeue_stale_running`.
+    """
+
 
 # Backoff exponencial entre reintentos: 30s, 60s, 120s...
 RETRY_BASE_SECONDS = 30
@@ -135,6 +158,35 @@ def fail(
             estado = "failed"
     logger.warning("Job %d falló (-> %s): %s", job_id, estado, error)
     return estado
+
+
+def requeue(job_id: int, reason: str, conn: sqlite3.Connection | None = None) -> None:
+    """Devuelve un job a 'pending' sin consumir el intento en curso.
+
+    Para el job que no llegó a trabajar porque se pidió la parada: el apagado no
+    es culpa suya, no gastó cuota y no hay nada que esperar antes de volver a
+    intentarlo, así que tampoco hay backoff. Es el mismo criterio que
+    `requeue_stale_running`, que tampoco castiga a un job por un corte de luz.
+
+    Solo toca el job si sigue 'running': devolver el intento de un job que ya
+    terminó falsearía la cuenta de intentos, que es lo único que acaba cortando
+    un job que no deja de volver.
+    """
+    conn = conn or get_conn()
+    with transaction(conn):
+        cur = conn.execute(
+            "UPDATE jobs SET status = 'pending', run_after = NULL, started_at = NULL,"
+            " attempts = MAX(attempts - 1, 0), error = ?"
+            " WHERE id = ? AND status = 'running'",
+            (reason, job_id),
+        )
+        devuelto = cur.rowcount > 0
+    if not devuelto:
+        logger.warning(
+            "Job %d ya no estaba 'running': no se devuelve a la cola (%s)", job_id, reason
+        )
+        return
+    logger.info("Job %d devuelto a la cola sin gastar intento: %s", job_id, reason)
 
 
 def list_jobs(
@@ -360,12 +412,40 @@ class JobWorker:
 
         try:
             handler(job)
+        except StopRequested as exc:
+            # Solo se devuelve el turno si la parada está pedida de verdad. Sin
+            # esta comprobación, un handler que lance StopRequested fuera del
+            # apagado se reencola sin gastar intento y el bucle —que no va a
+            # salir— lo vuelve a reclamar en la vuelta siguiente: bucle caliente
+            # sin backoff y sin cota de intentos que lo acabe cortando.
+            if self._stop.is_set():
+                _requeue_safely(job.id, f"parada pedida: {exc}")
+            else:
+                logger.error(
+                    "Job %d (%s) pidió devolver el turno sin parada en curso: se trata como fallo",
+                    job.id,
+                    job.type,
+                )
+                _fail_safely(job.id, f"StopRequested sin parada en curso: {exc}")
         except Exception as exc:  # bucle exterior de worker: el proceso no puede caer
             logger.exception("Job %d (%s) falló", job.id, job.type)
-            _fail_safely(job.id, f"{type(exc).__name__}: {exc}")
+            _fail_safely(job.id, f"{type(exc).__name__}: {exc}", retry=_worth_retrying(exc))
         else:
             _complete_safely(job.id, job.type)
         return job
+
+
+def _worth_retrying(exc: BaseException) -> bool:
+    """False para los fallos en los que reintentar solo es ruido.
+
+    `QuotaExceeded` es un tope diario: los tres intentos se queman en 90 s
+    contra un límite que no se levanta hasta medianoche, y el job termina
+    'failed' igual pero con el error del último choque en vez del primero.
+    `PermanentFailure` la lanza el handler cuando la causa es una decisión ya
+    tomada. En los dos casos el job queda 'failed' con su motivo a la vista, que
+    es de donde lo rescata el humano.
+    """
+    return not isinstance(exc, (PermanentFailure, QuotaExceeded))
 
 
 def _complete_safely(job_id: int, job_type: str) -> None:
@@ -376,6 +456,14 @@ def _complete_safely(job_id: int, job_type: str) -> None:
         logger.exception("No se pudo marcar como completado el job %d", job_id)
         return
     logger.info("Job %d (%s) completado", job_id, job_type)
+
+
+def _requeue_safely(job_id: int, reason: str) -> None:
+    """Devuelve el job a la cola sin que un fallo de la base mate al worker."""
+    try:
+        requeue(job_id, reason)
+    except Exception:
+        logger.exception("No se pudo devolver a la cola el job %d", job_id)
 
 
 def _fail_safely(job_id: int, error: str, *, retry: bool = True) -> None:
