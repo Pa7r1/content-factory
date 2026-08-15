@@ -65,6 +65,16 @@ cpm_by_niche:
   historias_cristianas: 2.5
   historias_epicas: 2.0
 
+# Formato de guion por nicho. Los cinco formatos y sus instrucciones viven en
+# factory/script/formats.py; aquí solo se dice cuál usa cada nicho cuando la
+# idea no trae uno sugerido por el motor de investigación.
+script_formats:
+  default: educativo
+  by_niche:
+    crecimiento_personal: educativo
+    historias_cristianas: storytelling
+    historias_epicas: misterio
+
 # Presupuestos diarios de cuota por API. El corte efectivo es el 80% (core/quota.py).
 quotas:
   youtube:

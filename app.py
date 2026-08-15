@@ -18,6 +18,7 @@ from pydantic import BaseModel
 from factory.core import db, queue
 from factory.core.scheduler import build_scheduler
 from factory.research import pipeline as research_pipeline
+from factory.script import writer as script_writer
 from factory.web.server import STATIC_DIR, router as web_router
 
 APP_VERSION = "0.1.0"
@@ -65,6 +66,7 @@ logger = logging.getLogger(__name__)
 # aquí sus handlers, siempre antes de `worker.start()`.
 worker = queue.JobWorker()
 research_pipeline.register(worker)
+script_writer.register(worker)
 
 
 @asynccontextmanager

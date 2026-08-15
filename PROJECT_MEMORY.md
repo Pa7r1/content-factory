@@ -364,6 +364,15 @@ Suite completa tras las dos rondas: **611 passed, 0 xfailed**.
 - **Los subreddits de `settings.yaml` están sin verificar**: se eligieron por criterio y no se
   pudieron comprobar por el 403. Uno que no exista simplemente se salta.
 - **trendspy** quedó fuera a propósito como mejora futura del scorer (fuente opcional degradable).
+- **Un job `failed` no tiene camino de vuelta**: `requeue_stale_running` solo rescata los `running`,
+  el scheduler solo reencola `research_daily` y el dashboard no tiene ninguna acción que reviva un
+  job. Una idea cuyo `write_script` falló por cuota se queda sin guion para siempre. La salida
+  decidida con el usuario es el botón de reintento del dashboard (unidad A3).
+- **`cpm_for_niche` y `quota_apis` repiten el patrón del YAML vacío** que sí se arregló en
+  `script_format.by_niche` y en `subreddits` (clave presente sin valor -> `None` -> revienta el
+  `.get`/`sorted` de después). Se dejan sin tocar por implausibles, con el radio de explosión
+  anotado: `cpm_for_niche` exige borrar los tres CPM dejando la clave colgando, y `quota_apis` solo
+  da un 500 en la pestaña Sistema, sin tumbar ningún job.
 
 ### Fuera de este repo
 

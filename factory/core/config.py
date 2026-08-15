@@ -63,6 +63,21 @@ def cpm_for_niche(niche: str) -> float | None:
     return float(valor) if valor is not None else None
 
 
+def script_format(niche: str) -> str:
+    """Formato de guion del nicho, o el de por defecto si no tiene uno propio.
+
+    Devuelve solo el identificador ('misterio', 'educativo', ...); las
+    instrucciones de cada formato viven en `factory/script/formats.py`, que es
+    quien valida que el identificador exista.
+    """
+    bloque: dict[str, Any] = settings()["script_formats"]
+    # `or {}` y no un default del get: un `by_niche:` sin valor en el YAML —lo
+    # que queda al borrar el último nicho— existe como clave y vale None, así
+    # que el default no llega a aplicarse y el .get() de abajo reventaría.
+    por_nicho: dict[str, str] = bloque.get("by_niche") or {}
+    return str(por_nicho.get(niche) or bloque["default"])
+
+
 def daily_budget(api: str) -> int:
     """Presupuesto diario de unidades para una API (p. ej. 'youtube')."""
     return int(settings()["quotas"][api]["daily_budget"])
