@@ -222,22 +222,53 @@ def test_el_mensaje_de_la_url_se_pinta_como_aviso(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    ("accion", "estado", "verbo"),
-    [("approve", "approved", "aprobada"), ("reject", "rejected", "descartada")],
-)
-def test_decidir_una_idea_cambia_su_estado_y_redirige_al_ranking(
+def test_descartar_una_idea_la_deja_descartada_y_redirige_al_ranking(
     client: TestClient, conn: sqlite3.Connection, config_de_prueba,
-    accion: str, estado: str, verbo: str,
 ):
     idea_id = _insertar_idea(conn, title="Hábitos de gente disciplinada")
 
-    respuesta = client.post(f"/ideas/{idea_id}/{accion}")
+    respuesta = client.post(f"/ideas/{idea_id}/reject")
 
     assert respuesta.status_code == 303
     assert respuesta.headers["location"].startswith("/?mensaje=")
-    assert _mensaje_del_redirect(respuesta) == f"Idea {verbo}: Hábitos de gente disciplinada"
-    assert _estado(conn, idea_id) == estado
+    assert _mensaje_del_redirect(respuesta) == (
+        "Idea descartada: Hábitos de gente disciplinada"
+    )
+    assert _estado(conn, idea_id) == "rejected"
+
+
+def test_aprobar_una_idea_la_marca_usada_y_encola_su_guion(
+    client: TestClient, conn: sqlite3.Connection, config_de_prueba,
+):
+    idea_id = _insertar_idea(conn, title="Hábitos de gente disciplinada")
+
+    respuesta = client.post(f"/ideas/{idea_id}/approve")
+
+    encolados = queue.unfinished_by_type("write_script", conn)
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].startswith("/?mensaje=")
+    assert [job.payload for job in encolados] == [{"idea_id": idea_id}]
+    assert _mensaje_del_redirect(respuesta) == (
+        "Idea aprobada: Hábitos de gente disciplinada"
+        f" - guion en cola (job {encolados[0].id})"
+    )
+    assert _estado(conn, idea_id) == "used"
+
+
+def test_dos_clics_en_aprobar_no_encolan_dos_guiones(
+    client: TestClient, conn: sqlite3.Connection, config_de_prueba,
+):
+    # El segundo clic llega con la idea ya en 'used': 409 y ni un job más. Cada
+    # guion de más es una generación completa de Gemini pagada dos veces.
+    idea_id = _insertar_idea(conn, title="Leyendas medievales")
+
+    primera = client.post(f"/ideas/{idea_id}/approve")
+    segunda = client.post(f"/ideas/{idea_id}/approve")
+
+    assert primera.status_code == 303
+    assert segunda.status_code == 409
+    assert "ya no se cambia" in segunda.json()["detail"]
+    assert len(queue.unfinished_by_type("write_script", conn)) == 1
 
 
 @pytest.mark.parametrize("accion", ["approve", "reject"])
@@ -300,6 +331,38 @@ def test_un_get_no_decide_nada(
 
     assert respuesta.status_code == 405
     assert _estado(conn, idea_id) == "new"
+
+
+@pytest.mark.concurrencia
+def test_seis_aprobaciones_simultaneas_encolan_un_solo_guion(
+    client: TestClient, conn: sqlite3.Connection, config_de_prueba,
+):
+    # El dedupe no puede vivir en un SELECT previo: seis peticiones en vuelo lo
+    # pasarían las seis y encolarían seis guiones. Lo decide el UPDATE dentro
+    # del BEGIN IMMEDIATE, así que solo una gana y las otras cinco ven 'used'.
+    idea_id = _insertar_idea(conn, title="Leyendas medievales")
+    arranque = threading.Barrier(6)
+    codigos: list[int] = []
+
+    def clic() -> None:
+        # Una petición de calentamiento antes de la barrera: así el hilo del
+        # threadpool ya tiene su conexión abierta y las seis aprobaciones caen
+        # de verdad a la vez, en vez de serializarse creando conexiones.
+        client.get("/")
+        arranque.wait()
+        codigos.append(client.post(f"/ideas/{idea_id}/approve").status_code)
+
+    hilos = [threading.Thread(target=clic) for _ in range(6)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=30)
+
+    assert sorted(codigos) == [303, 409, 409, 409, 409, 409]
+    assert [job.payload for job in queue.unfinished_by_type("write_script", conn)] == [
+        {"idea_id": idea_id}
+    ]
+    assert _estado(conn, idea_id) == "used"
 
 
 def test_un_id_que_no_es_un_numero_no_llega_a_la_base(

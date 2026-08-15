@@ -66,25 +66,37 @@ def ideas_view(request: Request, mensaje: str | None = None) -> HTMLResponse:
 
 @router.post("/ideas/{idea_id}/approve")
 def approve_idea(idea_id: int) -> RedirectResponse:
-    """Aprueba una idea: queda lista para que el hito 2 le escriba un guion."""
-    return _move_idea(idea_id, queries.APPROVED_STATUS, "aprobada")
+    """Aprueba una idea y encola su guion, en una sola transacción.
+
+    El guion lo escribe el worker, que tarda minutos: aquí se encola y se vuelve
+    al ranking. Aprobar dos veces la misma idea no encola dos guiones (el dedupe
+    está en `queries.approve_idea_for_script`); el segundo intento da 409.
+    """
+    try:
+        aprobada = queries.approve_idea_for_script(db.get_conn(), idea_id)
+    except (queries.IdeaNotFound, queries.IdeaLocked) as exc:
+        raise _error_de_idea(exc) from exc
+    return _volver_a_ideas(
+        f"Idea aprobada: {aprobada.title} - guion en cola (job {aprobada.job_id})"
+    )
 
 
 @router.post("/ideas/{idea_id}/reject")
 def reject_idea(idea_id: int) -> RedirectResponse:
     """Descarta una idea: no vuelve a proponerse en las pasadas siguientes."""
-    return _move_idea(idea_id, queries.REJECTED_STATUS, "descartada")
-
-
-def _move_idea(idea_id: int, new_status: str, verbo: str) -> RedirectResponse:
-    """Cambia el estado de una idea y vuelve al ranking con el resultado."""
     try:
-        titulo = queries.update_idea_status(db.get_conn(), idea_id, new_status)
-    except queries.IdeaNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except queries.IdeaLocked as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _volver_a_ideas(f"Idea {verbo}: {titulo}")
+        titulo = queries.update_idea_status(
+            db.get_conn(), idea_id, queries.REJECTED_STATUS
+        )
+    except (queries.IdeaNotFound, queries.IdeaLocked) as exc:
+        raise _error_de_idea(exc) from exc
+    return _volver_a_ideas(f"Idea descartada: {titulo}")
+
+
+def _error_de_idea(exc: queries.IdeaNotFound | queries.IdeaLocked) -> HTTPException:
+    """404 si la idea no existe; 409 si su estado ya no admite la decisión."""
+    codigo = 404 if isinstance(exc, queries.IdeaNotFound) else 409
+    return HTTPException(status_code=codigo, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------

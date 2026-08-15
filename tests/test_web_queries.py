@@ -2,8 +2,13 @@
 
 Lo que se prueba aquí es lo que la plantilla no puede arreglar: que el ranking
 enseñe lo que debe y en el orden que debe, que una señal ausente salga marcada
-con SU motivo en vez de contar como cero, y que mover una idea respete la
-whitelist de destinos y los estados terminales.
+con SU motivo en vez de contar como cero, y que decidir sobre una idea respete
+la whitelist de destinos y los estados terminales.
+
+Aprobar es además la única escritura del dashboard que gasta dinero: encola un
+guion, y cada guion es una generación completa de Gemini. Por eso su sección
+prueba las tres cosas que lo evitan: el estado y el job salen juntos o no salen,
+el segundo intento no encola nada y el job es el que el writer sabe atender.
 
 Base real en `tmp_path` (fixture `conn`), migraciones de producción, cero red.
 """
@@ -17,6 +22,7 @@ from typing import Any
 import pytest
 from freezegun import freeze_time
 
+from factory.script import writer
 from factory.web import queries
 
 AHORA = "2026-08-06 07:30:00"
@@ -64,6 +70,13 @@ def _insertar_idea(
 
 def _componente(vista: queries.IdeaView, nombre: str) -> queries.ComponentView:
     return next(c for c in vista.components if c.name == nombre)
+
+
+def _jobs(conn: sqlite3.Connection) -> list[tuple[str, Any]]:
+    """Todos los jobs de la cola como (tipo, payload). La cuenta importa: dos
+    guiones encolados para la misma idea son dos llamadas a Gemini pagadas."""
+    filas = conn.execute("SELECT type, payload FROM jobs ORDER BY id").fetchall()
+    return [(fila["type"], json.loads(fila["payload"])) for fila in filas]
 
 
 # ---------------------------------------------------------------------------
@@ -427,39 +440,46 @@ def test_sin_apis_con_presupuesto_la_tabla_de_cuota_queda_vacia(
 # ---------------------------------------------------------------------------
 
 
-def test_aprobar_una_idea_la_deja_aprobada_y_devuelve_su_titulo(
+def test_descartar_una_idea_la_deja_descartada_y_devuelve_su_titulo(
     conn: sqlite3.Connection,
 ):
     idea_id = _insertar_idea(conn, title="Historias de la Biblia 📖")
 
-    titulo = queries.update_idea_status(conn, idea_id, queries.APPROVED_STATUS)
+    titulo = queries.update_idea_status(conn, idea_id, queries.REJECTED_STATUS)
 
     assert titulo == "Historias de la Biblia 📖"
-    assert _estado(conn, idea_id) == "approved"
+    assert _estado(conn, idea_id) == "rejected"
 
 
-def test_descartar_una_idea_la_deja_descartada(conn: sqlite3.Connection):
+def test_descartar_una_idea_no_encola_ningun_guion(conn: sqlite3.Connection):
+    # El único camino que escribe en `jobs` es aprobar. Si la guarda compartida
+    # acabase encolando también aquí, descartar costaría una llamada a Gemini.
     idea_id = _insertar_idea(conn)
 
     queries.update_idea_status(conn, idea_id, queries.REJECTED_STATUS)
 
-    assert _estado(conn, idea_id) == "rejected"
+    assert _jobs(conn) == []
 
 
-def test_decidir_una_idea_actualiza_su_marca_de_tiempo(conn: sqlite3.Connection):
+def test_descartar_una_idea_actualiza_su_marca_de_tiempo(conn: sqlite3.Connection):
     idea_id = _insertar_idea(conn)
     conn.execute("UPDATE ideas SET updated_at = '2020-01-01 00:00:00' WHERE id = ?", (idea_id,))
 
-    queries.update_idea_status(conn, idea_id, queries.APPROVED_STATUS)
+    queries.update_idea_status(conn, idea_id, queries.REJECTED_STATUS)
 
     fila = conn.execute("SELECT updated_at FROM ideas WHERE id = ?", (idea_id,)).fetchone()
     assert fila["updated_at"] > "2020-01-01 00:00:00"
 
 
-@pytest.mark.parametrize("destino", ["used", "new", "shortlisted", "borrada", ""])
-def test_el_dashboard_solo_mueve_ideas_a_aprobada_o_descartada(
+@pytest.mark.parametrize(
+    "destino", ["approved", "used", "new", "shortlisted", "borrada", ""]
+)
+def test_el_dashboard_solo_mueve_ideas_a_descartada_por_esta_via(
     conn: sqlite3.Connection, destino: str
 ):
+    # 'approved' entra en la lista a propósito: aprobar escribe además en `jobs`
+    # y tiene su propia función. Un camino que dejase la idea en 'approved' sin
+    # guion en cola devolvería el estado ambiguo que A2 eliminó.
     idea_id = _insertar_idea(conn)
 
     with pytest.raises(ValueError, match="el dashboard no mueve ideas"):
@@ -468,11 +488,11 @@ def test_el_dashboard_solo_mueve_ideas_a_aprobada_o_descartada(
     assert _estado(conn, idea_id) == "new"
 
 
-def test_decidir_una_idea_que_no_existe_es_un_error_explicito(
+def test_descartar_una_idea_que_no_existe_es_un_error_explicito(
     conn: sqlite3.Connection,
 ):
     with pytest.raises(queries.IdeaNotFound, match="no existe la idea 404"):
-        queries.update_idea_status(conn, 404, queries.APPROVED_STATUS)
+        queries.update_idea_status(conn, 404, queries.REJECTED_STATUS)
 
 
 def test_una_idea_ya_usada_esta_bloqueada_y_no_cambia_de_estado(
@@ -496,18 +516,136 @@ def test_tras_un_bloqueo_la_conexion_sigue_pudiendo_escribir(
     libre = _insertar_idea(conn, title="Libre")
 
     with pytest.raises(queries.IdeaLocked):
-        queries.update_idea_status(conn, bloqueada, queries.APPROVED_STATUS)
+        queries.update_idea_status(conn, bloqueada, queries.REJECTED_STATUS)
 
-    assert queries.update_idea_status(conn, libre, queries.APPROVED_STATUS) == "Libre"
+    assert queries.update_idea_status(conn, libre, queries.REJECTED_STATUS) == "Libre"
 
 
-def test_una_idea_descartada_se_puede_rehabilitar(conn: sqlite3.Connection):
-    # 'rejected' no está en LOCKED_STATUSES: descartar por error tiene arreglo.
-    idea_id = _insertar_idea(conn, status="rejected")
+# ---------------------------------------------------------------------------
+# approve_idea_for_script
+# ---------------------------------------------------------------------------
 
-    queries.update_idea_status(conn, idea_id, queries.APPROVED_STATUS)
 
-    assert _estado(conn, idea_id) == "approved"
+def test_aprobar_una_idea_la_deja_usada_y_devuelve_su_titulo_y_su_job(
+    conn: sqlite3.Connection,
+):
+    idea_id = _insertar_idea(conn, title="Historias de la Biblia 📖")
+
+    aprobada = queries.approve_idea_for_script(conn, idea_id)
+
+    assert aprobada.id == idea_id
+    assert aprobada.title == "Historias de la Biblia 📖"
+    assert _estado(conn, idea_id) == "used"
+    assert [(tipo, payload) for tipo, payload in _jobs(conn)] == [
+        ("write_script", {"idea_id": idea_id})
+    ]
+
+
+def test_el_job_que_se_encola_es_el_que_el_writer_sabe_atender(
+    conn: sqlite3.Connection,
+):
+    # La web no puede importar de `factory.script`, así que la cadena está
+    # duplicada. Este test es el único sitio donde las dos se miran a la cara:
+    # si una se renombra, el job se encolaría sin handler y el guion no se
+    # escribiría nunca, con el job muriendo en 'failed' sin que nadie mire.
+    idea_id = _insertar_idea(conn)
+
+    aprobada = queries.approve_idea_for_script(conn, idea_id)
+
+    assert queries.WRITE_SCRIPT_JOB_TYPE == writer.JOB_TYPE
+    fila = conn.execute(
+        "SELECT type, payload, status FROM jobs WHERE id = ?", (aprobada.job_id,)
+    ).fetchone()
+    assert fila["type"] == writer.JOB_TYPE
+    assert json.loads(fila["payload"]) == {"idea_id": idea_id}
+    assert fila["status"] == "pending"
+
+
+def test_el_estado_en_el_que_queda_la_idea_admite_guion_para_el_writer(
+    conn: sqlite3.Connection,
+):
+    # El writer rechaza sin reintento las ideas cuyo estado no admite guion. Si
+    # el dashboard dejase la idea en un estado que no está en esa lista, cada
+    # aprobación encolaría un job condenado a 'failed'.
+    assert queries.USED_STATUS in writer.WRITABLE_IDEA_STATUSES
+
+
+def test_aprobar_dos_veces_no_encola_dos_guiones(conn: sqlite3.Connection):
+    # Doble clic, dos pestañas o el botón "atrás": el segundo intento choca con
+    # el estado dentro del BEGIN IMMEDIATE, antes de encolar nada.
+    idea_id = _insertar_idea(conn)
+    queries.approve_idea_for_script(conn, idea_id)
+
+    with pytest.raises(queries.IdeaLocked, match="ya no se cambia"):
+        queries.approve_idea_for_script(conn, idea_id)
+
+    assert _jobs(conn) == [("write_script", {"idea_id": idea_id})]
+    assert _estado(conn, idea_id) == "used"
+
+
+def test_aprobar_una_idea_descartada_no_la_blanquea_ni_encola_su_guion(
+    conn: sqlite3.Connection,
+):
+    # Descartar es definitivo, y esta es la única defensa de esa decisión:
+    # 'rejected' está en LOCKED_STATUSES. Si saliese de ahí, aprobar una idea
+    # ya descartada la devolvería a 'used' y pagaría una generación de Gemini
+    # de algo que el humano dijo que no. Se afirman las tres consecuencias
+    # —excepción, estado intacto y cola vacía— porque lo que cuesta dinero es
+    # el job: lanzar DESPUÉS de encolar seguiría cobrando el guion.
+    idea_id = _insertar_idea(conn, title="Ya descartada", status="rejected")
+
+    with pytest.raises(queries.IdeaLocked, match="ya no se cambia"):
+        queries.approve_idea_for_script(conn, idea_id)
+
+    assert _estado(conn, idea_id) == "rejected"
+    assert _jobs(conn) == []
+
+
+def test_aprobar_una_idea_que_no_existe_no_encola_nada(conn: sqlite3.Connection):
+    with pytest.raises(queries.IdeaNotFound, match="no existe la idea 404"):
+        queries.approve_idea_for_script(conn, 404)
+
+    assert _jobs(conn) == []
+
+
+def test_si_el_encolado_del_guion_falla_la_idea_no_queda_aprobada(
+    conn: sqlite3.Connection,
+):
+    # Lo que justifica la transacción única. Con el UPDATE y el INSERT en dos
+    # transacciones, la idea quedaría en 'used' —bloqueada, invisible en el
+    # ranking— sin guion en cola y sin forma de volver a pedirlo.
+    idea_id = _insertar_idea(conn)
+    conn.execute("DROP TABLE jobs")
+
+    with pytest.raises(sqlite3.OperationalError, match="jobs"):
+        queries.approve_idea_for_script(conn, idea_id)
+
+    assert _estado(conn, idea_id) == "new"
+
+
+def test_aprobar_no_crea_todavia_la_fila_del_video(conn: sqlite3.Connection):
+    # La fila de `videos` la escribe el writer cuando el guion existe: una fila
+    # vacía esperando guion le haría creer al writer que ya lo escribió.
+    idea_id = _insertar_idea(conn)
+
+    queries.approve_idea_for_script(conn, idea_id)
+
+    assert conn.execute("SELECT COUNT(*) FROM videos").fetchone()[0] == 0
+
+
+def test_tras_un_bloqueo_al_aprobar_la_conexion_sigue_pudiendo_aprobar(
+    conn: sqlite3.Connection,
+):
+    # Aprobar escribe dos veces dentro de la transacción: si el rollback del
+    # camino bloqueado la dejase abierta, el dashboard quedaría de adorno.
+    bloqueada = _insertar_idea(conn, title="Bloqueada", status="used")
+    libre = _insertar_idea(conn, title="Libre")
+
+    with pytest.raises(queries.IdeaLocked):
+        queries.approve_idea_for_script(conn, bloqueada)
+
+    assert queries.approve_idea_for_script(conn, libre).title == "Libre"
+    assert _jobs(conn) == [("write_script", {"idea_id": libre})]
 
 
 def _estado(conn: sqlite3.Connection, idea_id: int) -> str:

@@ -69,12 +69,13 @@ MAX_OUTPUT_TOKENS = 8192
 # Cuántos hooks y CTA aprendidos se le enseñan al modelo, como mucho.
 KNOWLEDGE_PER_KIND = 4
 
-# Estados de la idea desde los que se escribe un guion. 'used' se acepta de
-# antemano: hoy nada lo pone —el dashboard todavía no encola guiones—, pero
-# cuando lo cablee marcará la idea como usada al encolar el job, y sin 'used'
-# aquí ningún guion llegaría a escribirse. Desde 'rejected' no se escribe: el
-# humano ya dijo que no, y un guion nacido de ahí se cuela en el checkpoint como
-# si nadie hubiera decidido nada.
+# Estados de la idea desde los que se escribe un guion. 'used' es el que deja el
+# dashboard al aprobar: marca la idea como usada en la misma transacción que
+# encola este job. Desde 'rejected' no se escribe: el humano ya dijo que no, y un
+# guion nacido de ahí se cuela en el checkpoint como si nadie hubiera decidido
+# nada. El dashboard ya no deja llegar hasta aquí una idea descartada —aprobarla
+# da 409—, así que esta lista es defensa en profundidad para jobs encolados a
+# mano o heredados de una cola vieja, no la única barrera.
 WRITABLE_IDEA_STATUSES = frozenset({"approved", "used"})
 
 # Un guion entero tarda más que las listas cortas de `research/`, así que se le
@@ -185,10 +186,11 @@ def _load_idea(conn: sqlite3.Connection, idea_id: int) -> Idea:
 def _assert_writable(idea: Idea) -> None:
     """Corta antes de llamar al modelo si la idea ya no admite guion.
 
-    Entre que se encola el job y que el worker lo coge, el humano puede haber
-    rechazado la idea desde el dashboard —un job en backoff da minutos de
-    ventana, y un "atrás" del navegador basta—. Sin esta guarda nacía un video
-    en 'script_draft' de una idea rechazada y el job terminaba en 'done'.
+    Por el camino del dashboard ya no debería entrar aquí una idea descartada:
+    aprobar una idea en 'rejected' da 409 y la que se aprueba queda en 'used',
+    que el propio dashboard tampoco deja mover. Esto es la segunda barrera, para
+    un job encolado a mano o heredado de una cola vieja: sin ella nace un video
+    en 'script_draft' de una idea rechazada y el job termina en 'done'.
 
     Sin reintento: el estado de una idea no vuelve solo, lo mueve una persona.
     """

@@ -5,17 +5,24 @@ El plan completo por hitos está en [ROADMAP.md](ROADMAP.md).
 
 ---
 
-## Dónde estamos (última sesión: 2026-08-13)
+## Dónde estamos (última sesión: 2026-08-15)
 
-**Hito 1 cerrado y el motor por fin rinde entero.** Repo en GitHub:
-`https://github.com/Pa7r1/content-factory` (privado). Esquema en `user_version = 3`.
-El hito 2 (guiones + base de conocimiento) es lo siguiente; está descrito en [ROADMAP.md](ROADMAP.md).
+**Hito 1 cerrado. Hito 2 a dos tercios: el guion ya se escribe y ya se encola solo.**
+Repo en GitHub: `https://github.com/Pa7r1/content-factory` (privado). Esquema en `user_version = 3`.
+
+El hito 2 se partió en tres unidades, para que cada una pase entera por el ciclo de especialistas:
+
+- **A1 — el motor del guion** (`factory/script/`), hecho y commiteado (`62854e5`, `603fbce`).
+- **A2 — el enganche**, hecho: aprobar una idea la pasa a `used` y encola el `write_script` en la
+  misma transacción. Descartar es definitivo (decisión del usuario).
+- **A3 — el dashboard**, pendiente: editor de guion, checkpoint humano, y los dos botones
+  decididos con el usuario — **reescribir** un guion rechazado y **reintentar** un job fallido.
 
 **Arrancar:**
 
 ```bash
 venv/bin/python app.py          # dashboard en http://localhost:8000
-venv/bin/python -m pytest -q    # 758 passed, CERO xfail
+venv/bin/python -m pytest -q    # 854 passed, CERO xfail
 ```
 
 Si aparece algún `xfail`, no lo ignores: significa que se dejó un arreglo a medias — el marcador
@@ -37,7 +44,15 @@ así que los 3 nichos entran justos. Gemini gasta ~1 unidad por keyword de un to
 1. **Repoblar los dos nichos que quedaron sin pasar** (`historias_cristianas`, `historias_epicas`):
    la cuota de YouTube se agotó el día 13. El cron de las 07:30 lo hace solo si la app está viva.
 2. Confirmar que la suite sigue verde antes de tocar nada.
-3. Empezar el hito 2.
+3. **Unidad A3**, que cierra el hito 2. Tres cosas que ya salieron de las revisiones y le tocan:
+   - **Una idea cuyo guion falla desaparece de todas las vistas.** No sale en el ranking (solo se
+     listan `new`/`shortlisted`), está bloqueada por `LOCKED_STATUSES`, y su único rastro es el job
+     en la pestaña Sistema, que a 25 jobs de límite se cae de la lista en ~8 días. El botón de
+     reintento la rescata: `used` sigue en `writer.WRITABLE_IDEA_STATUSES`, así que reencolar vale.
+   - **Los 409 se ven como página de error de FastAPI**, no como aviso en el ranking. Pasa con el
+     doble clic en Aprobar y, desde A2, también en Descartar, que dejó de ser idempotente.
+   - **Hay 1 idea real en `approved`** (estado legado del hito 1) sin botón que la mueva: no sale
+     en el ranking. O la recoge A3 o necesita un `UPDATE` a mano. **Son datos del usuario: avisar.**
 
 **Dos decisiones de calidad pendientes, que son del usuario:**
 

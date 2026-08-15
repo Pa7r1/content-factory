@@ -5,8 +5,9 @@ El dashboard es un consumidor más del blackboard: lee `ideas`, `jobs` y
 Devuelve estructuras ya listas para la plantilla, para que `server.py` se quede
 solo con las rutas y las plantillas no tengan lógica.
 
-La única escritura que hace la web es cambiar el estado de una idea, y vive
-también aquí (`update_idea_status`) para no repartir el SQL en dos ficheros.
+Lo único que escribe la web es la decisión sobre una idea —aprobarla o
+descartarla—, y vive también aquí para no repartir el SQL en dos ficheros.
+Aprobar además encola el guion, en la misma transacción.
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Any, Sequence
 
-from factory.core import config
+from factory.core import config, queue
 from factory.core.db import transaction
 from factory.core.quota import CUTOFF_RATIO, usage_today
 
@@ -26,13 +27,26 @@ logger = logging.getLogger(__name__)
 # Estados en los que una idea sigue esperando decisión humana.
 PENDING_STATUSES: tuple[str, ...] = ("new", "shortlisted")
 
-# Estados a los que el dashboard puede mover una idea desde el ranking.
-APPROVED_STATUS = "approved"
+# Estados a los que el dashboard mueve una idea desde el ranking. Aprobar la
+# deja en 'used', no en 'approved': 'approved' no distingue "esperando guion" de
+# "ya tiene guion", y esa distinción es justo la que impide encolar dos veces.
 REJECTED_STATUS = "rejected"
+USED_STATUS = "used"
 
-# Una idea ya convertida en video no vuelve al ranking: cambiarla dejaría el
-# video huérfano de la decisión que lo originó.
-LOCKED_STATUSES: frozenset[str] = frozenset({"used"})
+# Estados en los que la decisión ya está tomada y el dashboard no la revisa.
+# 'used': su guion está en cola o escrito, y cambiarla dejaría el video huérfano
+# de la decisión que lo originó.
+# 'rejected': descartar es definitivo. Sin esto, aprobar una idea descartada la
+# blanqueaba a 'used' y encolaba su guion, saltándose la guarda del writer, que
+# no escribe desde 'rejected' precisamente porque el humano ya dijo que no.
+# `research/pipeline` ya trata los dos como terminales y no los repropone.
+LOCKED_STATUSES: frozenset[str] = frozenset({USED_STATUS, REJECTED_STATUS})
+
+# Tipo del job que escribe el guion. La cadena está repetida a propósito con
+# `factory.script.writer.JOB_TYPE`: la web no importa de un módulo de dominio,
+# se hablan por la base (blackboard). Es el mismo trato que tienen
+# `core.scheduler.RESEARCH_JOB_ID` y `research.pipeline.JOB_TYPE`.
+WRITE_SCRIPT_JOB_TYPE = "write_script"
 
 # Qué fuente alimenta cada sub-señal de cada componente del score. Sirve para
 # explicar en el desglose POR QUÉ falta un trozo: `score_details.missing_signals`
@@ -101,6 +115,15 @@ class IdeaView:
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovedIdea:
+    """La idea que se acaba de aprobar y el job de guion que salió con ella."""
+
+    id: int
+    title: str
+    job_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class QuotaView:
     """Consumo de hoy de una API contra su presupuesto y su corte."""
 
@@ -146,31 +169,89 @@ def count_ideas_by_status(conn: sqlite3.Connection) -> dict[str, int]:
     return {fila["status"]: int(fila["n"]) for fila in filas}
 
 
+def approve_idea_for_script(conn: sqlite3.Connection, idea_id: int) -> ApprovedIdea:
+    """Aprueba una idea y encola su guion, todo en la misma transacción.
+
+    La idea queda en 'used' y no en 'approved' porque 'approved' no dice si el
+    guion ya se pidió. Como 'used' está en `LOCKED_STATUSES`, la segunda
+    aprobación de la misma idea choca con `IdeaLocked` antes de encolar nada:
+    ese es el dedupe del doble clic, de las dos pestañas y del botón "atrás".
+
+    Leer el estado, escribirlo y encolar el job son UNA operación, no tres: van
+    juntas bajo `BEGIN IMMEDIATE`. En pasos separados, dos peticiones en vuelo a
+    la vez pasan las dos el control y encolan dos guiones, y cada guion es una
+    generación completa de Gemini.
+
+    La fila de `videos` no se crea aquí: la escribe el job cuando el guion
+    existe de verdad. Una fila vacía esperando guion es un estado que nadie
+    limpia si el job falla.
+    """
+    with transaction(conn):
+        fila = _idea_que_admite_decision(conn, idea_id)
+        conn.execute(
+            "UPDATE ideas SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (USED_STATUS, idea_id),
+        )
+        # Dos intentos, no los tres por defecto: cada intento de este job es una
+        # generación de Gemini pagada, y encima cada uno reintenta ya por dentro
+        # (`llm.MAX_ATTEMPTS`), así que el peor caso son intentos x reintentos
+        # peticiones seguidas contra un free tier de 10 por minuto. Lo que se cura
+        # reintentando —un 503 de Gemini— se curó al segundo intento cuando pasó
+        # de verdad; el tercero solo repite un fallo determinista (un título que
+        # bloquea el filtro de seguridad) gastando la ventana que otro job necesita.
+        job_id = queue.enqueue(
+            WRITE_SCRIPT_JOB_TYPE, {"idea_id": idea_id}, max_attempts=2, conn=conn
+        )
+    logger.info("Idea %d aprobada -> %s, guion encolado en el job %d",
+                idea_id, USED_STATUS, job_id)
+    return ApprovedIdea(id=idea_id, title=str(fila["title"]), job_id=job_id)
+
+
 def update_idea_status(conn: sqlite3.Connection, idea_id: int, new_status: str) -> str:
     """Cambia el estado de una idea y devuelve su título, para el mensaje de vuelta.
+
+    Solo descarta: aprobar escribe además en `jobs` y tiene su propia función
+    (`approve_idea_for_script`). Dejar aquí un camino que mueva la idea a
+    'approved' sin encolar el guion sería volver al estado ambiguo del que
+    venimos.
+
+    Descartar dos veces la misma idea NO es idempotente: el segundo intento
+    choca con `IdeaLocked` igual que la segunda aprobación, porque 'rejected'
+    está en `LOCKED_STATUSES`. Es el mismo trato que el doble clic en aprobar y
+    la idea ya está descartada de todas formas.
 
     Lee y luego escribe, así que va bajo `BEGIN IMMEDIATE`: una transacción
     DEFERRED que empieza leyendo falla al instante con "database is locked".
     """
-    if new_status not in (APPROVED_STATUS, REJECTED_STATUS):
+    if new_status != REJECTED_STATUS:
         raise ValueError(f"el dashboard no mueve ideas a {new_status!r}")
 
     with transaction(conn):
-        fila = conn.execute(
-            "SELECT title, status FROM ideas WHERE id = ?", (idea_id,)
-        ).fetchone()
-        if fila is None:
-            raise IdeaNotFound(f"no existe la idea {idea_id}")
-        if fila["status"] in LOCKED_STATUSES:
-            raise IdeaLocked(
-                f"la idea {idea_id} está en estado {fila['status']!r} y ya no se cambia"
-            )
+        fila = _idea_que_admite_decision(conn, idea_id)
         conn.execute(
             "UPDATE ideas SET status = ?, updated_at = datetime('now') WHERE id = ?",
             (new_status, idea_id),
         )
     logger.info("Idea %d -> %s", idea_id, new_status)
     return str(fila["title"])
+
+
+def _idea_que_admite_decision(conn: sqlite3.Connection, idea_id: int) -> sqlite3.Row:
+    """Fila de la idea si su estado todavía admite una decisión del dashboard.
+
+    Se llama SIEMPRE dentro de la transacción que va a escribir: leer fuera y
+    escribir después es la carrera que ya mordió dos veces en este repo.
+    """
+    fila = conn.execute(
+        "SELECT title, status FROM ideas WHERE id = ?", (idea_id,)
+    ).fetchone()
+    if fila is None:
+        raise IdeaNotFound(f"no existe la idea {idea_id}")
+    if fila["status"] in LOCKED_STATUSES:
+        raise IdeaLocked(
+            f"la idea {idea_id} está en estado {fila['status']!r} y ya no se cambia"
+        )
+    return fila
 
 
 def _to_idea_view(fila: sqlite3.Row) -> IdeaView:
