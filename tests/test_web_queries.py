@@ -28,7 +28,7 @@ from typing import Any
 import pytest
 from freezegun import freeze_time
 
-from factory.core import models
+from factory.core import models, queue
 from factory.script import writer
 from factory.web import queries
 
@@ -1183,3 +1183,213 @@ def test_descartar_un_video_que_no_existe_es_un_error_explicito(
 ):
     with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
         queries.reject_script(conn, 404)
+
+
+# ---------------------------------------------------------------------------
+# rejected_scripts / rewrite_script
+# ---------------------------------------------------------------------------
+
+
+def test_la_lista_de_rechazados_trae_los_mas_recientes_primero(
+    conn: sqlite3.Connection,
+):
+    idea_vieja = _insertar_idea(conn, title="Idea vieja")
+    idea_nueva = _insertar_idea(conn, title="Idea nueva")
+    _insertar_video(
+        conn, title="El primero en rechazarse", status="rejected",
+        idea_id=idea_vieja, updated_at="2026-08-01 10:00:00",
+    )
+    _insertar_video(
+        conn, title="El último en rechazarse", status="rejected",
+        idea_id=idea_nueva, updated_at="2026-08-10 10:00:00",
+    )
+
+    rechazados = queries.rejected_scripts(conn)
+
+    assert [r.title for r in rechazados] == [
+        "El último en rechazarse", "El primero en rechazarse",
+    ]
+
+
+def test_un_rechazado_sin_idea_detras_no_aparece_en_la_lista(
+    conn: sqlite3.Connection,
+):
+    # Sin idea_id no hay a qué idea reencolarle un guion nuevo: no hay ninguna
+    # acción posible sobre esa fila, así que no tiene sentido ofrecerla.
+    _insertar_video(conn, status="rejected", idea_id=None)
+
+    assert queries.rejected_scripts(conn) == []
+
+
+def test_un_guion_en_borrador_no_aparece_entre_los_rechazados(
+    conn: sqlite3.Connection,
+):
+    idea_id = _insertar_idea(conn)
+    _insertar_video(conn, status="script_draft", idea_id=idea_id)
+
+    assert queries.rejected_scripts(conn) == []
+
+
+def test_reescribir_encola_un_guion_nuevo_para_la_idea_del_video_rechazado(
+    conn: sqlite3.Connection,
+):
+    idea_id = _insertar_idea(conn, title="Hábitos que no se pegan")
+    video_id = _insertar_video(conn, status="rejected", idea_id=idea_id)
+
+    job_id = queries.rewrite_script(conn, video_id)
+
+    assert _jobs(conn) == [("write_script", {"idea_id": idea_id})]
+    assert queue.claim_next(conn).id == job_id
+    # El guion viejo se queda de historial: reescribir no lo toca.
+    assert _fila_video(conn, video_id)["status"] == "rejected"
+
+
+def test_reescribir_un_guion_que_no_esta_rechazado_da_bloqueado(
+    conn: sqlite3.Connection,
+):
+    idea_id = _insertar_idea(conn)
+    video_id = _insertar_video(conn, status="script_draft", idea_id=idea_id)
+
+    with pytest.raises(queries.ScriptLocked, match="script_draft"):
+        queries.rewrite_script(conn, video_id)
+    assert _jobs(conn) == []
+
+
+def test_reescribir_un_guion_rechazado_sin_idea_da_bloqueado(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn, status="rejected", idea_id=None)
+
+    with pytest.raises(queries.ScriptLocked, match="no tiene una idea asociada"):
+        queries.rewrite_script(conn, video_id)
+
+
+def test_reescribir_un_video_que_no_existe_es_un_error_explicito(
+    conn: sqlite3.Connection,
+):
+    with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
+        queries.rewrite_script(conn, 404)
+
+
+def test_reescribir_dos_veces_no_encola_dos_guiones(conn: sqlite3.Connection):
+    # Mismo criterio que aprobar una idea: dos clics no pueden pagar dos
+    # generaciones completas de Gemini por el mismo guion.
+    idea_id = _insertar_idea(conn)
+    video_id = _insertar_video(conn, status="rejected", idea_id=idea_id)
+
+    queries.rewrite_script(conn, video_id)
+    with pytest.raises(queries.ScriptLocked, match="ya hay un guion en camino"):
+        queries.rewrite_script(conn, video_id)
+
+    assert _jobs(conn) == [("write_script", {"idea_id": idea_id})]
+
+
+def test_reescribir_una_idea_que_ya_tiene_otro_guion_no_encola_nada(
+    conn: sqlite3.Connection,
+):
+    # La reescritura anterior ya terminó: la idea tiene una fila viva y el job
+    # que se encolase aquí no escribiría nada (el writer lo descarta con un
+    # WARNING). Sin este corte, el humano lee "en reescritura" y no pasa nada
+    # más. Sucede con la página sin refrescar y con el botón "atrás", que
+    # siguen enseñando la fila descartada con su botón.
+    idea_id = _insertar_idea(conn)
+    rechazado = _insertar_video(conn, status="rejected", idea_id=idea_id)
+    nuevo = _insertar_video(conn, status="script_draft", idea_id=idea_id)
+
+    with pytest.raises(queries.ScriptLocked, match=f"video {nuevo}"):
+        queries.rewrite_script(conn, rechazado)
+
+    assert _jobs(conn) == []
+
+
+def test_un_guion_ya_aprobado_tampoco_deja_reescribir_el_rechazado_anterior(
+    conn: sqlite3.Connection,
+):
+    idea_id = _insertar_idea(conn)
+    rechazado = _insertar_video(conn, status="rejected", idea_id=idea_id)
+    _insertar_video(conn, status="script_approved", idea_id=idea_id)
+
+    with pytest.raises(queries.ScriptLocked, match="script_approved"):
+        queries.rewrite_script(conn, rechazado)
+
+    assert _jobs(conn) == []
+
+
+def test_dos_rechazados_de_la_misma_idea_solo_encolan_una_reescritura(
+    conn: sqlite3.Connection,
+):
+    # Se rechazó un guion, se reescribió, y el segundo también se rechazó: la
+    # idea tiene dos filas 'rejected' y ninguna viva. Reescribir vuelve a valer,
+    # pero una sola vez.
+    idea_id = _insertar_idea(conn)
+    primero = _insertar_video(conn, status="rejected", idea_id=idea_id)
+    segundo = _insertar_video(conn, status="rejected", idea_id=idea_id)
+
+    queries.rewrite_script(conn, segundo)
+    with pytest.raises(queries.ScriptLocked, match="ya hay un guion en camino"):
+        queries.rewrite_script(conn, primero)
+
+    assert _jobs(conn) == [("write_script", {"idea_id": idea_id})]
+
+
+# ---------------------------------------------------------------------------
+# retry_job
+# ---------------------------------------------------------------------------
+
+
+def _job_fallido(conn: sqlite3.Connection, *, payload: dict[str, Any] | None = None) -> int:
+    """Un `write_script` que agotó sus intentos y quedó 'failed'."""
+    job_id = queue.enqueue(
+        "write_script", payload or {"idea_id": 1}, max_attempts=1, conn=conn
+    )
+    queue.claim_next(conn)
+    queue.fail(job_id, "el modelo no respondió", conn=conn)
+    return job_id
+
+
+def test_reintentar_encola_un_job_nuevo_con_el_mismo_tipo_y_payload(
+    conn: sqlite3.Connection,
+):
+    job_id = _job_fallido(conn, payload={"idea_id": 7})
+
+    nuevo_id = queries.retry_job(conn, job_id)
+
+    assert nuevo_id != job_id
+    nuevo = conn.execute(
+        "SELECT type, status, payload FROM jobs WHERE id = ?", (nuevo_id,)
+    ).fetchone()
+    assert nuevo["type"] == "write_script"
+    assert nuevo["status"] == "pending"
+    assert json.loads(nuevo["payload"]) == {"idea_id": 7}
+    # El job viejo no se toca: sigue 'failed' con su motivo, como rastro.
+    assert conn.execute(
+        "SELECT status FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()["status"] == "failed"
+
+
+def test_reintentar_un_job_que_no_existe_es_un_error_explicito(
+    conn: sqlite3.Connection,
+):
+    with pytest.raises(queries.JobNotFound, match="no existe el job 404"):
+        queries.retry_job(conn, 404)
+
+
+def test_reintentar_un_job_pendiente_da_no_reintentable(conn: sqlite3.Connection):
+    job_id = queue.enqueue("write_script", {"idea_id": 1}, conn=conn)
+
+    with pytest.raises(queries.JobNotRetryable, match="solo se reintenta"):
+        queries.retry_job(conn, job_id)
+
+
+def test_reintentar_dos_veces_el_mismo_job_no_duplica_el_reintento(
+    conn: sqlite3.Connection,
+):
+    # El primer reintento deja un job nuevo 'pending' con el mismo payload; el
+    # segundo clic sobre el job viejo se encuentra ya con uno en curso.
+    job_id = _job_fallido(conn, payload={"idea_id": 9})
+    queries.retry_job(conn, job_id)
+
+    with pytest.raises(queries.JobNotRetryable, match="ya hay un job"):
+        queries.retry_job(conn, job_id)
+
+    assert len(_jobs(conn)) == 2

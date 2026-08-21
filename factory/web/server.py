@@ -1,6 +1,6 @@
 """Rutas del dashboard: ranking de ideas, checkpoint del guion y estado del sistema.
 
-Cuatro vistas y seis acciones, todas con formularios POST clásicos y redirect
+Cuatro vistas y ocho acciones, todas con formularios POST clásicos y redirect
 (patrón POST/Redirect/GET): el dashboard funciona sin una línea de JavaScript,
 que es lo que quieres cuando lo abres a las 7 de la mañana desde el móvil.
 
@@ -70,12 +70,15 @@ def approve_idea(idea_id: int) -> RedirectResponse:
 
     El guion lo escribe el worker, que tarda minutos: aquí se encola y se vuelve
     al ranking. Aprobar dos veces la misma idea no encola dos guiones (el dedupe
-    está en `queries.approve_idea_for_script`); el segundo intento da 409.
+    está en `queries.approve_idea_for_script`); el segundo intento no rompe la
+    vista, vuelve al ranking con el aviso.
     """
     try:
         aprobada = queries.approve_idea_for_script(db.get_conn(), idea_id)
-    except (queries.IdeaNotFound, queries.IdeaLocked) as exc:
-        raise _error_de_idea(exc) from exc
+    except queries.IdeaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.IdeaLocked as exc:
+        return _volver_a_ideas(f"No se pudo aprobar: {exc}")
     return _volver_a_ideas(
         f"Idea aprobada: {aprobada.title} - guion en cola (job {aprobada.job_id})"
     )
@@ -88,15 +91,11 @@ def reject_idea(idea_id: int) -> RedirectResponse:
         titulo = queries.update_idea_status(
             db.get_conn(), idea_id, queries.REJECTED_STATUS
         )
-    except (queries.IdeaNotFound, queries.IdeaLocked) as exc:
-        raise _error_de_idea(exc) from exc
+    except queries.IdeaNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.IdeaLocked as exc:
+        return _volver_a_ideas(f"No se pudo descartar: {exc}")
     return _volver_a_ideas(f"Idea descartada: {titulo}")
-
-
-def _error_de_idea(exc: queries.IdeaNotFound | queries.IdeaLocked) -> HTTPException:
-    """404 si la idea no existe; 409 si su estado ya no admite la decisión."""
-    codigo = 404 if isinstance(exc, queries.IdeaNotFound) else 409
-    return HTTPException(status_code=codigo, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -106,13 +105,15 @@ def _error_de_idea(exc: queries.IdeaNotFound | queries.IdeaLocked) -> HTTPExcept
 
 @router.get("/scripts", response_class=HTMLResponse)
 def scripts_view(request: Request, mensaje: str | None = None) -> HTMLResponse:
-    """Los guiones que esperan que alguien los lea y decida."""
+    """Los guiones que esperan que alguien los lea y decida, y los descartados."""
+    conn = db.get_conn()
     return templates.TemplateResponse(
         request,
         "scripts.html",
         {
             "activa": "guiones",
-            "guiones": queries.scripts_awaiting_review(db.get_conn()),
+            "guiones": queries.scripts_awaiting_review(conn),
+            "rechazados": queries.rejected_scripts(conn),
             "mensaje": mensaje,
         },
     )
@@ -125,8 +126,10 @@ def script_view(
     """Un guion entero, en el editor por capítulos."""
     try:
         guion = queries.script_for_review(db.get_conn(), video_id)
-    except (queries.ScriptNotFound, queries.ScriptLocked) as exc:
-        raise _error_de_guion(exc) from exc
+    except queries.ScriptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.ScriptLocked as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     return templates.TemplateResponse(
         request,
         "script.html",
@@ -146,8 +149,12 @@ def save_script(
     try:
         edicion = _edicion_del_formulario(gancho, cierre, titulo, narracion)
         titulo_video = queries.save_script_draft(db.get_conn(), video_id, edicion)
-    except (queries.ScriptNotFound, queries.ScriptLocked, queries.ScriptInvalid) as exc:
-        raise _error_de_guion(exc) from exc
+    except queries.ScriptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.ScriptLocked as exc:
+        return _volver_a_guiones(f"No se pudo guardar: {exc}")
+    except queries.ScriptInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _volver_al_guion(video_id, f"Cambios guardados: {titulo_video}")
 
 
@@ -161,14 +168,19 @@ def approve_script(
 ) -> RedirectResponse:
     """Guarda lo escrito y aprueba el guion, en una sola transacción.
 
-    Aprobar dos veces el mismo guion da 409: el segundo intento se encuentra el
-    video fuera de 'script_draft' (el dedupe está en `queries.approve_script`).
+    Aprobar dos veces el mismo guion no rompe la vista: el segundo intento se
+    encuentra el video fuera de 'script_draft' (el dedupe está en
+    `queries.approve_script`) y vuelve a la lista con el aviso.
     """
     try:
         edicion = _edicion_del_formulario(gancho, cierre, titulo, narracion)
         titulo_video = queries.approve_script(db.get_conn(), video_id, edicion)
-    except (queries.ScriptNotFound, queries.ScriptLocked, queries.ScriptInvalid) as exc:
-        raise _error_de_guion(exc) from exc
+    except queries.ScriptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.ScriptLocked as exc:
+        return _volver_a_guiones(f"No se pudo aprobar: {exc}")
+    except queries.ScriptInvalid as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return _volver_a_guiones(f"Guion aprobado: {titulo_video}")
 
 
@@ -177,9 +189,23 @@ def reject_script(video_id: int) -> RedirectResponse:
     """Descarta el guion: ese video no se produce."""
     try:
         titulo_video = queries.reject_script(db.get_conn(), video_id)
-    except (queries.ScriptNotFound, queries.ScriptLocked) as exc:
-        raise _error_de_guion(exc) from exc
+    except queries.ScriptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.ScriptLocked as exc:
+        return _volver_a_guiones(f"No se pudo descartar: {exc}")
     return _volver_a_guiones(f"Guion descartado: {titulo_video}")
+
+
+@router.post("/scripts/{video_id}/rewrite")
+def rewrite_script(video_id: int) -> RedirectResponse:
+    """Pide un guion nuevo para la idea de un guion ya descartado."""
+    try:
+        job_id = queries.rewrite_script(db.get_conn(), video_id)
+    except queries.ScriptNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.ScriptLocked as exc:
+        return _volver_a_guiones(f"No se pudo reescribir: {exc}")
+    return _volver_a_guiones(f"Guion en reescritura (job {job_id})")
 
 
 def _edicion_del_formulario(
@@ -218,19 +244,6 @@ def _texto_del_formulario(texto: str) -> str:
     retornos de carro en el texto que el hito 3 va a locutar.
     """
     return texto.replace("\r\n", "\n").strip()
-
-
-def _error_de_guion(
-    exc: queries.ScriptNotFound | queries.ScriptLocked | queries.ScriptInvalid,
-) -> HTTPException:
-    """404 si el video no existe, 409 si ya lo decidieron, 400 si la edición no vale."""
-    if isinstance(exc, queries.ScriptNotFound):
-        codigo = 404
-    elif isinstance(exc, queries.ScriptLocked):
-        codigo = 409
-    else:
-        codigo = 400
-    return HTTPException(status_code=codigo, detail=str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -273,6 +286,18 @@ def run_research_now() -> RedirectResponse:
         resultado.job_ids, resultado.skipped_niches,
     )
     return _volver_a_sistema(_mensaje_de_investigacion(resultado))
+
+
+@router.post("/system/jobs/{job_id}/retry")
+def retry_job(job_id: int) -> RedirectResponse:
+    """Reencola un job fallido (típicamente un write_script sin guion)."""
+    try:
+        nuevo_id = queries.retry_job(db.get_conn(), job_id)
+    except queries.JobNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except queries.JobNotRetryable as exc:
+        return _volver_a_sistema(f"No se pudo reintentar: {exc}")
+    return _volver_a_sistema(f"Job reintentado: nuevo job {nuevo_id}")
 
 
 def _mensaje_de_investigacion(resultado: scheduler.ResearchEnqueue) -> str:

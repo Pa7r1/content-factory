@@ -36,4 +36,26 @@
   </li>
 {% endfor %}
 </ul>
+
+{% if rechazados %}
+<h2 class="titulo-vista titulo-vista--secundario">Guiones descartados</h2>
+<ul class="guiones guiones--rechazados">
+{% for guion in rechazados %}
+  <li class="guiones-fila">
+    <article class="guion guion--rechazado" id="rechazado-{{ guion.video_id }}">
+      <h3 class="guion-titulo">{{ guion.title }}</h3>
+      <p class="guion-meta">
+        {% if guion.niche %}<span class="guion-nicho">{{ guion.niche.replace('_', ' ') }}</span>{% endif %}
+        {% if guion.format %}<span class="guion-formato">{{ guion.format }}</span>{% endif %}
+        <span class="guion-fecha">{{ guion.updated_at[:16] }}</span>
+      </p>
+      <form class="guion-acciones" method="post"
+            action="/scripts/{{ guion.video_id }}/rewrite">
+        <button class="boton boton--reescribir" type="submit">Reescribir</button>
+      </form>
+    </article>
+  </li>
+{% endfor %}
+</ul>
+{% endif %}
 {% endblock %}

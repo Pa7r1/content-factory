@@ -101,6 +101,14 @@ class ScriptInvalid(ValueError):
     """La edición que llegó del formulario dejaría el guion inservible."""
 
 
+class JobNotFound(LookupError):
+    """No existe ningún job con ese id."""
+
+
+class JobNotRetryable(RuntimeError):
+    """El job no está 'failed', o ya hay uno igual pendiente o en ejecución."""
+
+
 @dataclass(frozen=True, slots=True)
 class MissingSignal:
     """Una señal que no llegó, con el motivo tal como se registró en la DB."""
@@ -515,6 +523,94 @@ def reject_script(conn: sqlite3.Connection, video_id: int) -> str:
     return str(fila["title"] or "")
 
 
+def rejected_scripts(conn: sqlite3.Connection, *, limit: int = 50) -> list[ScriptSummary]:
+    """Guiones descartados con una idea detrás, los más recientes primero.
+
+    Sin `idea_id` no hay a qué idea reencolarle un guion nuevo, así que esos
+    quedan fuera de esta lista: no hay ninguna acción posible sobre ellos.
+    """
+    filas = conn.execute(
+        """
+        SELECT v.id, v.title, v.format, v.script_json, v.updated_at, i.niche
+          FROM videos v
+          LEFT JOIN ideas i ON i.id = v.idea_id
+         WHERE v.status = ? AND v.idea_id IS NOT NULL
+         ORDER BY v.updated_at DESC, v.id DESC
+         LIMIT ?
+        """,
+        (SCRIPT_REJECTED_STATUS, limit),
+    ).fetchall()
+    return [_to_script_summary(fila) for fila in filas]
+
+
+def rewrite_script(conn: sqlite3.Connection, video_id: int) -> int:
+    """Pide un guion nuevo para la idea de un guion rechazado. Devuelve el job id.
+
+    El guion viejo se queda en 'rejected' como historial: `writer._existing_video`
+    ya no lo cuenta como "hay guion" para esa idea (excluye 'rejected' a
+    propósito), así que el job nuevo crea una fila fresca en 'script_draft' en
+    vez de chocar con la vieja.
+
+    Se reescribe una sola vez: si la idea ya tiene otro guion vivo, esto corta
+    aquí en vez de encolar un job que el writer va a descartar en silencio.
+    Leerlo y encolar van juntos bajo `BEGIN IMMEDIATE`, que es lo que hace que
+    dos clics simultáneos no paguen dos generaciones de Gemini.
+    """
+    with transaction(conn):
+        fila = conn.execute(
+            "SELECT idea_id, status FROM videos WHERE id = ?", (video_id,)
+        ).fetchone()
+        if fila is None:
+            raise ScriptNotFound(f"no existe el video {video_id}")
+        if fila["status"] != SCRIPT_REJECTED_STATUS:
+            raise ScriptLocked(
+                f"el guion del video {video_id} está en estado {fila['status']!r}"
+                " y solo se reescribe un guion descartado"
+            )
+        idea_id = fila["idea_id"]
+        if idea_id is None:
+            raise ScriptLocked(
+                f"el video {video_id} no tiene una idea asociada: no hay a qué reescribir"
+            )
+        # La idea ya reescrita tiene una fila viva, y el writer no la pisa: sin
+        # esta comprobación el job se encola, no escribe nada y solo deja un
+        # WARNING en el log, mientras el humano lee "en reescritura" y espera
+        # algo que no va a pasar. Sucede con la página sin refrescar y con el
+        # botón "atrás", que siguen enseñando la fila descartada y su botón.
+        vivo = _video_vivo_de_la_idea(conn, idea_id)
+        if vivo is not None:
+            raise ScriptLocked(
+                f"la idea {idea_id} ya tiene otro guion en estado"
+                f" {vivo['status']!r} (video {vivo['id']}): no se reescribe"
+            )
+        if _ya_hay_en_curso(conn, WRITE_SCRIPT_JOB_TYPE, {"idea_id": idea_id}):
+            raise ScriptLocked(f"ya hay un guion en camino para la idea {idea_id}")
+        job_id = queue.enqueue(
+            WRITE_SCRIPT_JOB_TYPE, {"idea_id": idea_id}, max_attempts=2, conn=conn
+        )
+    logger.info(
+        "Guion del video %d (idea %d) en reescritura -> job %d", video_id, idea_id, job_id
+    )
+    return job_id
+
+
+def _video_vivo_de_la_idea(
+    conn: sqlite3.Connection, idea_id: int
+) -> sqlite3.Row | None:
+    """El video largo de la idea que sigue en pie, si lo hay.
+
+    Mismo criterio que `writer._existing_video`: solo el largo (los shorts
+    cuelgan de él y no tienen guion propio) y sin contar los descartados, que
+    son historial. La cadena 'rejected' está repetida a propósito con la del
+    writer: la web no importa de un módulo de dominio.
+    """
+    return conn.execute(
+        "SELECT id, status FROM videos WHERE idea_id = ? AND kind = 'long'"
+        " AND status != ? ORDER BY id LIMIT 1",
+        (idea_id, SCRIPT_REJECTED_STATUS),
+    ).fetchone()
+
+
 def _guion_en_borrador(conn: sqlite3.Connection, video_id: int) -> sqlite3.Row:
     """Fila del video si su guion sigue esperando decisión.
 
@@ -745,6 +841,53 @@ def _as_minutes(segundos: Any) -> float | None:
 def _ahora_rfc3339() -> str:
     """Instante actual en UTC, con el mismo formato que escribe el writer."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Jobs
+# ---------------------------------------------------------------------------
+
+
+def retry_job(conn: sqlite3.Connection, job_id: int) -> int:
+    """Reencola un job fallido con el mismo tipo y payload. Devuelve el id nuevo.
+
+    No revive el job viejo: encola uno nuevo y deja el fallido tal cual, como
+    rastro de qué pasó. El dedupe compara tipo y payload contra lo que ya está
+    pendiente o en ejecución, para que un doble clic no encole dos veces algo
+    tan caro como una generación de guion.
+    """
+    with transaction(conn):
+        fila = conn.execute(
+            "SELECT type, status, payload, max_attempts FROM jobs WHERE id = ?",
+            (job_id,),
+        ).fetchone()
+        if fila is None:
+            raise JobNotFound(f"no existe el job {job_id}")
+        if fila["status"] != "failed":
+            raise JobNotRetryable(
+                f"el job {job_id} está en estado {fila['status']!r}:"
+                " solo se reintenta un job 'failed'"
+            )
+        payload = json.loads(fila["payload"] or "{}")
+        if _ya_hay_en_curso(conn, fila["type"], payload):
+            raise JobNotRetryable(
+                f"ya hay un job de tipo {fila['type']!r} en curso con el mismo payload"
+            )
+        nuevo_id = queue.enqueue(
+            fila["type"], payload, max_attempts=fila["max_attempts"], conn=conn
+        )
+    logger.info("Job %d reintentado -> nuevo job %d", job_id, nuevo_id)
+    return nuevo_id
+
+
+def _ya_hay_en_curso(
+    conn: sqlite3.Connection, job_type: str, payload: dict[str, Any]
+) -> bool:
+    """True si ya hay un job del mismo tipo y payload pendiente o en ejecución."""
+    return any(
+        pendiente.payload == payload
+        for pendiente in queue.unfinished_by_type(job_type, conn=conn)
+    )
 
 
 # ---------------------------------------------------------------------------

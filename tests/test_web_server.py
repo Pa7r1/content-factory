@@ -130,14 +130,16 @@ def _insertar_video(
     title: str = "Un guion por revisar",
     status: str = "script_draft",
     guion: dict[str, Any] | None = None,
+    idea_id: int | None = None,
 ) -> int:
     contenido = json.loads(json.dumps(guion if guion is not None else GUION))
     cur = conn.execute(
         """
-        INSERT INTO videos (kind, format, title, chapters, script_json, status)
-        VALUES ('long', 'misterio', ?, ?, ?, ?)
+        INSERT INTO videos (idea_id, kind, format, title, chapters, script_json, status)
+        VALUES (?, 'long', 'misterio', ?, ?, ?, ?)
         """,
         (
+            idea_id,
             title,
             "\n".join(
                 f"{c['start_sec'] // 60:02d}:{c['start_sec'] % 60:02d} {c['title']}"
@@ -191,7 +193,7 @@ def _formulario(
 # ---------------------------------------------------------------------------
 
 
-def test_el_router_expone_las_cuatro_vistas_y_las_seis_acciones():
+def test_el_router_expone_las_cuatro_vistas_y_las_ocho_acciones():
     rutas = {(ruta.path, tuple(sorted(ruta.methods))) for ruta in router.routes}
 
     assert rutas == {
@@ -204,7 +206,9 @@ def test_el_router_expone_las_cuatro_vistas_y_las_seis_acciones():
         ("/scripts/{video_id}/save", ("POST",)),
         ("/scripts/{video_id}/approve", ("POST",)),
         ("/scripts/{video_id}/reject", ("POST",)),
+        ("/scripts/{video_id}/rewrite", ("POST",)),
         ("/research/run", ("POST",)),
+        ("/system/jobs/{job_id}/retry", ("POST",)),
     }
 
 
@@ -354,16 +358,17 @@ def test_aprobar_una_idea_la_marca_usada_y_encola_su_guion(
 def test_dos_clics_en_aprobar_no_encolan_dos_guiones(
     client: TestClient, conn: sqlite3.Connection, config_de_prueba,
 ):
-    # El segundo clic llega con la idea ya en 'used': 409 y ni un job más. Cada
-    # guion de más es una generación completa de Gemini pagada dos veces.
+    # El segundo clic llega con la idea ya en 'used': vuelve al ranking con un
+    # aviso, sin encolar ni un job más. Cada guion de más es una generación
+    # completa de Gemini pagada dos veces.
     idea_id = _insertar_idea(conn, title="Leyendas medievales")
 
     primera = client.post(f"/ideas/{idea_id}/approve")
     segunda = client.post(f"/ideas/{idea_id}/approve")
 
     assert primera.status_code == 303
-    assert segunda.status_code == 409
-    assert "ya no se cambia" in segunda.json()["detail"]
+    assert segunda.status_code == 303
+    assert "ya no se cambia" in _mensaje_del_redirect(segunda)
     assert len(queue.unfinished_by_type("write_script", conn)) == 1
 
 
@@ -404,15 +409,15 @@ def test_decidir_una_idea_que_no_existe_da_404(
 
 
 @pytest.mark.parametrize("accion", ["approve", "reject"])
-def test_decidir_una_idea_ya_usada_da_409_y_la_deja_como_estaba(
+def test_decidir_una_idea_ya_usada_no_rompe_la_vista_y_la_deja_como_estaba(
     client: TestClient, conn: sqlite3.Connection, config_de_prueba, accion: str
 ):
     idea_id = _insertar_idea(conn, title="Ya convertida en video", status="used")
 
     respuesta = client.post(f"/ideas/{idea_id}/{accion}")
 
-    assert respuesta.status_code == 409
-    assert "ya no se cambia" in respuesta.json()["detail"]
+    assert respuesta.status_code == 303
+    assert "ya no se cambia" in _mensaje_del_redirect(respuesta)
     assert _estado(conn, idea_id) == "used"
 
 
@@ -454,7 +459,7 @@ def test_seis_aprobaciones_simultaneas_encolan_un_solo_guion(
     for hilo in hilos:
         hilo.join(timeout=30)
 
-    assert sorted(codigos) == [303, 409, 409, 409, 409, 409]
+    assert codigos == [303] * 6
     assert [job.payload for job in queue.unfinished_by_type("write_script", conn)] == [
         {"idea_id": idea_id}
     ]
@@ -646,7 +651,7 @@ def test_descartar_desde_el_editor_no_produce_el_video(
     assert _guion_guardado(conn, video_id) == GUION
 
 
-def test_la_segunda_pestana_que_aprueba_recibe_409_y_no_pisa_el_texto(
+def test_la_segunda_pestana_que_aprueba_no_pisa_el_texto(
     client: TestClient, conn: sqlite3.Connection
 ):
     video_id = _insertar_video(conn)
@@ -656,8 +661,8 @@ def test_la_segunda_pestana_que_aprueba_recibe_409_y_no_pisa_el_texto(
         f"/scripts/{video_id}/approve", data=_formulario(gancho="La tardía")
     )
 
-    assert respuesta.status_code == 409
-    assert "ya no espera decisión" in respuesta.json()["detail"]
+    assert respuesta.status_code == 303
+    assert "ya no espera decisión" in _mensaje_del_redirect(respuesta)
     assert _estado_del_video(conn, video_id) == "script_approved"
     assert _guion_guardado(conn, video_id)["hook"] == "La buena"
 
@@ -731,10 +736,78 @@ def test_seis_aprobaciones_simultaneas_deciden_el_guion_una_sola_vez(
         hilo.join(timeout=30)
 
     guardado = _guion_guardado(conn, video_id)
-    assert sorted(codigos) == [303, 409, 409, 409, 409, 409]
+    assert codigos == [303] * 6
     assert _estado_del_video(conn, video_id) == "script_approved"
     assert guardado["hook"].startswith("Gancho del hilo ")
     assert guardado["original"] == GUION
+
+
+# ---------------------------------------------------------------------------
+# Reescribir un guion rechazado
+# ---------------------------------------------------------------------------
+
+
+def test_los_guiones_rechazados_aparecen_en_su_propia_seccion(
+    client: TestClient, conn: sqlite3.Connection
+):
+    idea_id = _insertar_idea(conn, title="Hábitos que no se pegan")
+    video_id = _insertar_video(
+        conn, title="Guion descartado", status="rejected", idea_id=idea_id
+    )
+
+    html = client.get("/scripts").text
+
+    assert "Guiones descartados" in html
+    assert "Guion descartado" in html
+    assert f'action="/scripts/{video_id}/rewrite"' in html
+
+
+def test_un_rechazado_sin_idea_no_aparece_en_la_seccion_de_rechazados(
+    client: TestClient, conn: sqlite3.Connection
+):
+    _insertar_video(conn, title="Sin idea detrás", status="rejected", idea_id=None)
+
+    html = client.get("/scripts").text
+
+    assert "Guiones descartados" not in html
+
+
+def test_reescribir_encola_un_guion_y_vuelve_a_la_lista_de_guiones(
+    client: TestClient, conn: sqlite3.Connection
+):
+    idea_id = _insertar_idea(conn, title="Hábitos que no se pegan")
+    video_id = _insertar_video(conn, status="rejected", idea_id=idea_id)
+
+    respuesta = client.post(f"/scripts/{video_id}/rewrite")
+
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].startswith("/scripts?mensaje=")
+    assert "en reescritura" in _mensaje_del_redirect(respuesta)
+    assert [job.payload for job in queue.unfinished_by_type("write_script", conn)] == [
+        {"idea_id": idea_id}
+    ]
+
+
+def test_reescribir_un_guion_que_no_esta_rechazado_no_rompe_la_vista(
+    client: TestClient, conn: sqlite3.Connection
+):
+    idea_id = _insertar_idea(conn)
+    video_id = _insertar_video(conn, status="script_draft", idea_id=idea_id)
+
+    respuesta = client.post(f"/scripts/{video_id}/rewrite")
+
+    assert respuesta.status_code == 303
+    assert "No se pudo reescribir" in _mensaje_del_redirect(respuesta)
+    assert queue.unfinished_by_type("write_script", conn) == []
+
+
+def test_reescribir_un_video_que_no_existe_da_404(
+    client: TestClient, conn: sqlite3.Connection
+):
+    respuesta = client.post("/scripts/9999/rewrite")
+
+    assert respuesta.status_code == 404
+    assert respuesta.json()["detail"] == "no existe el video 9999"
 
 
 # ---------------------------------------------------------------------------
@@ -946,3 +1019,106 @@ def test_un_doble_clic_simultaneo_no_encola_la_investigacion_dos_veces(
     assert sorted(job.payload["niche"] for job in encolados) == [
         "crecimiento_personal", "historias_epicas",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Reintentar un job
+# ---------------------------------------------------------------------------
+
+
+def _job_fallido(conn: sqlite3.Connection) -> int:
+    job_id = queue.enqueue("write_script", {"idea_id": 1}, max_attempts=1, conn=conn)
+    queue.claim_next(conn)
+    queue.fail(job_id, "el modelo no respondió", conn=conn)
+    return job_id
+
+
+def test_reintentar_encola_un_job_nuevo_y_vuelve_a_sistema(
+    client: TestClient, conn: sqlite3.Connection
+):
+    job_id = _job_fallido(conn)
+
+    respuesta = client.post(f"/system/jobs/{job_id}/retry")
+
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].startswith("/system?mensaje=")
+    assert "Job reintentado" in _mensaje_del_redirect(respuesta)
+    assert len(queue.unfinished_by_type("write_script", conn)) == 1
+
+
+def test_reintentar_un_job_pendiente_no_rompe_la_vista(
+    client: TestClient, conn: sqlite3.Connection
+):
+    job_id = queue.enqueue("write_script", {"idea_id": 1}, conn=conn)
+
+    respuesta = client.post(f"/system/jobs/{job_id}/retry")
+
+    assert respuesta.status_code == 303
+    assert "No se pudo reintentar" in _mensaje_del_redirect(respuesta)
+
+
+@pytest.mark.concurrencia
+def test_seis_reintentos_simultaneos_encolan_un_solo_job(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # El dedupe de `retry_job` no puede vivir en un SELECT previo: seis clics en
+    # vuelo lo pasarían los seis y encolarían seis guiones, que son seis
+    # generaciones de Gemini pagadas. Lo serializa el BEGIN IMMEDIATE, igual
+    # que en el claim de la cola y en aprobar una idea.
+    job_id = _job_fallido(conn)
+    arranque = threading.Barrier(6)
+    codigos: list[int] = []
+
+    def clic() -> None:
+        # Calentamiento antes de la barrera: el hilo del threadpool abre su
+        # conexión y los seis reintentos caen de verdad a la vez.
+        client.get("/system")
+        arranque.wait()
+        codigos.append(client.post(f"/system/jobs/{job_id}/retry").status_code)
+
+    hilos = [threading.Thread(target=clic) for _ in range(6)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=30)
+
+    assert codigos == [303] * 6
+    assert [job.payload for job in queue.unfinished_by_type("write_script", conn)] == [
+        {"idea_id": 1}
+    ]
+
+
+@pytest.mark.concurrencia
+def test_seis_reescrituras_simultaneas_encolan_un_solo_guion(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # La misma carrera del lado de los guiones descartados.
+    idea_id = _insertar_idea(conn, title="Hábitos que no se pegan")
+    video_id = _insertar_video(conn, status="rejected", idea_id=idea_id)
+    arranque = threading.Barrier(6)
+    codigos: list[int] = []
+
+    def clic() -> None:
+        client.get("/scripts")
+        arranque.wait()
+        codigos.append(client.post(f"/scripts/{video_id}/rewrite").status_code)
+
+    hilos = [threading.Thread(target=clic) for _ in range(6)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=30)
+
+    assert codigos == [303] * 6
+    assert [job.payload for job in queue.unfinished_by_type("write_script", conn)] == [
+        {"idea_id": idea_id}
+    ]
+
+
+def test_reintentar_un_job_que_no_existe_da_404(
+    client: TestClient, conn: sqlite3.Connection
+):
+    respuesta = client.post("/system/jobs/9999/retry")
+
+    assert respuesta.status_code == 404
+    assert respuesta.json()["detail"] == "no existe el job 9999"

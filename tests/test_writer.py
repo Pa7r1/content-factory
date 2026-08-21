@@ -736,7 +736,7 @@ def test_un_video_en_idea_approved_recibe_el_guion_en_su_misma_fila(conn, entorn
 
 @pytest.mark.parametrize(
     "estado",
-    ["script_draft", "script_approved", "producing", "video_ready", "published", "rejected"],
+    ["script_draft", "script_approved", "producing", "video_ready", "published"],
 )
 @freeze_time(AHORA)
 def test_un_video_que_ya_avanzo_no_admite_otro_guion_ni_gasta_cuota(
@@ -751,6 +751,30 @@ def test_un_video_que_ya_avanzo_no_admite_otro_guion_ni_gasta_cuota(
     fila = _video(conn)
     assert fila["status"] == estado
     assert fila["script_json"] is None
+
+
+@freeze_time(AHORA)
+def test_un_video_rechazado_si_admite_un_guion_nuevo(conn, entorno, modelo):
+    # 'rejected' es el único estado "avanzado" que SÍ deja pasar un guion nuevo:
+    # es lo que hace posible reescribir un guion que el humano descartó. El
+    # rechazado queda de historial (su propia fila no se toca) y nace una fila
+    # aparte en 'script_draft'.
+    idea = _nueva_idea(conn)
+    rechazado = _nuevo_video(conn, idea, "rejected")
+
+    writer.handle_write_script(_job(idea))
+
+    assert modelo.prompts != []
+    vieja = conn.execute(
+        "SELECT status, script_json FROM videos WHERE id = ?", (rechazado,)
+    ).fetchone()
+    assert vieja["status"] == "rejected"
+    assert vieja["script_json"] is None
+
+    nueva = conn.execute(
+        "SELECT status FROM videos WHERE idea_id = ? AND id != ?", (idea, rechazado)
+    ).fetchone()
+    assert nueva["status"] == "script_draft"
 
 
 @freeze_time(AHORA)

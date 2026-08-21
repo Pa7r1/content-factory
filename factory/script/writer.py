@@ -478,13 +478,16 @@ def _already_has_script(conn: sqlite3.Connection, idea_id: int) -> bool:
 
 
 def _existing_video(conn: sqlite3.Connection, idea_id: int | None) -> sqlite3.Row | None:
-    """Fila del video largo de esta idea, si ya existe.
+    """Fila del video largo activo de esta idea, si ya existe.
 
     Solo el largo: los shorts del hito 3 cuelgan de él por `parent_video_id` y
-    no tienen guion propio.
+    no tienen guion propio. Un video en 'rejected' no cuenta como "ya existe":
+    el dashboard ofrece reescribir un guion rechazado, y eso solo funciona si
+    esta comprobación deja pasar un guion nuevo para la misma idea. El
+    rechazado queda de historial; la fila nueva nace aparte.
     """
     return conn.execute(
         "SELECT id, status FROM videos WHERE idea_id = ? AND kind = 'long'"
-        " ORDER BY id LIMIT 1",
+        " AND status != 'rejected' ORDER BY id LIMIT 1",
         (idea_id,),
     ).fetchone()

@@ -69,6 +69,7 @@
           <th scope="col">Intentos</th>
           <th scope="col">Payload</th>
           <th scope="col">Error</th>
+          <th scope="col">Acciones</th>
         </tr>
       </thead>
       <tbody>
@@ -80,9 +81,16 @@
           <td class="job-intentos">{{ job.attempts }} / {{ job.max_attempts }}</td>
           <td class="job-payload" title="{{ job.payload }}">{{ job.payload }}</td>
           <td class="job-error" title="{{ job.error or '' }}">{{ job.error or '' }}</td>
+          <td class="job-acciones">
+            {% if job.status == 'failed' %}
+            <form method="post" action="/system/jobs/{{ job.id }}/retry">
+              <button class="boton boton--reintentar" type="submit">Reintentar</button>
+            </form>
+            {% endif %}
+          </td>
         </tr>
       {% else %}
-        <tr><td colspan="6" class="vacio">La cola todavía no ha tenido trabajo.</td></tr>
+        <tr><td colspan="7" class="vacio">La cola todavía no ha tenido trabajo.</td></tr>
       {% endfor %}
       </tbody>
     </table>
