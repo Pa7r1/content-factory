@@ -5,24 +5,30 @@ El plan completo por hitos está en [ROADMAP.md](ROADMAP.md).
 
 ---
 
-## Dónde estamos (última sesión: 2026-08-15)
+## Dónde estamos (última sesión: 2026-08-21)
 
-**Hito 1 cerrado. Hito 2 a dos tercios: el guion ya se escribe y ya se encola solo.**
-Repo en GitHub: `https://github.com/Pa7r1/content-factory` (privado). Esquema en `user_version = 3`.
+**Hito 2 cerrado: guion + checkpoint humano completos.** Repo en GitHub:
+`https://github.com/Pa7r1/content-factory` (privado). Esquema en `user_version = 3`.
 
 El hito 2 se partió en tres unidades, para que cada una pase entera por el ciclo de especialistas:
 
 - **A1 — el motor del guion** (`factory/script/`), hecho y commiteado (`62854e5`, `603fbce`).
 - **A2 — el enganche**, hecho: aprobar una idea la pasa a `used` y encola el `write_script` en la
   misma transacción. Descartar es definitivo (decisión del usuario).
-- **A3 — el dashboard**, pendiente: editor de guion, checkpoint humano, y los dos botones
-  decididos con el usuario — **reescribir** un guion rechazado y **reintentar** un job fallido.
+- **A3 — el dashboard**, hecho: editor de guion en `/scripts` (listar, leer, editar por
+  capítulos, guardar, aprobar, descartar), más los dos botones decididos con el usuario —
+  **reescribir** un guion rechazado y **reintentar** un job fallido — y el aviso amigable en vez
+  de la página de error de FastAPI cuando un doble clic choca con un estado ya decidido.
+
+Queda pendiente, fuera de A3, un ítem que el roadmap del hito 2 pedía y que esta unidad no cubre:
+la base de conocimiento (`knowledge`) con FTS5 — hoy es una tabla normal con índices simples;
+`writer._knowledge()` la consulta con SQL corriente. Se anota como deuda técnica.
 
 **Arrancar:**
 
 ```bash
 venv/bin/python app.py          # dashboard en http://localhost:8000
-venv/bin/python -m pytest -q    # 854 passed, CERO xfail
+venv/bin/python -m pytest -q    # 953 passed, CERO xfail
 ```
 
 Si aparece algún `xfail`, no lo ignores: significa que se dejó un arreglo a medias — el marcador
@@ -30,8 +36,10 @@ lleva dentro el motivo.
 
 **Qué hace hoy:** cada mañana a las 07:30 sondea las keywords semilla de los 3 nichos, mide las
 señales, **criba el material y le pide a Gemini temas de vídeo propios** (ya no copia títulos
-ajenos), los puntúa de 0 a 100 y los deja en el dashboard para aprobar o descartar. También hay
-un botón "Investigar ahora" en la pestaña Sistema.
+ajenos), los puntúa de 0 a 100 y los deja en el dashboard para aprobar o descartar. Al aprobar
+una idea se encola su guion; el humano lo lee, edita y aprueba o descarta en `/scripts`. Un guion
+descartado se puede reescribir desde cero, y un job de guion fallido se puede reintentar desde la
+pestaña Sistema. También hay un botón "Investigar ahora" en la pestaña Sistema.
 
 **Las dos claves están puestas y verificadas** (`YOUTUBE_API_KEY`, `GOOGLE_AI_API_KEY`). Faltan
 `PEXELS_API_KEY` y `PIXABAY_API_KEY`, que son del hito 3.
@@ -44,15 +52,8 @@ así que los 3 nichos entran justos. Gemini gasta ~1 unidad por keyword de un to
 1. **Repoblar los dos nichos que quedaron sin pasar** (`historias_cristianas`, `historias_epicas`):
    la cuota de YouTube se agotó el día 13. El cron de las 07:30 lo hace solo si la app está viva.
 2. Confirmar que la suite sigue verde antes de tocar nada.
-3. **Unidad A3**, que cierra el hito 2. Tres cosas que ya salieron de las revisiones y le tocan:
-   - **Una idea cuyo guion falla desaparece de todas las vistas.** No sale en el ranking (solo se
-     listan `new`/`shortlisted`), está bloqueada por `LOCKED_STATUSES`, y su único rastro es el job
-     en la pestaña Sistema, que a 25 jobs de límite se cae de la lista en ~8 días. El botón de
-     reintento la rescata: `used` sigue en `writer.WRITABLE_IDEA_STATUSES`, así que reencolar vale.
-   - **Los 409 se ven como página de error de FastAPI**, no como aviso en el ranking. Pasa con el
-     doble clic en Aprobar y, desde A2, también en Descartar, que dejó de ser idempotente.
-   - **Hay 1 idea real en `approved`** (estado legado del hito 1) sin botón que la mueva: no sale
-     en el ranking. O la recoge A3 o necesita un `UPDATE` a mano. **Son datos del usuario: avisar.**
+3. **Arrancar el hito 3** (producción de video): migrar TTS/imágenes/montaje del MVP anterior. Ver
+   `ROADMAP.md`.
 
 **Dos decisiones de calidad pendientes, que son del usuario:**
 
@@ -162,6 +163,36 @@ muerto en silencio durante días. La suite verde no basta; hay que verificar en 
     estado en la DB y las saca del ranking (17 restantes); idea inexistente → 404, idea `used` →
     409; "Investigar ahora" encoló los jobs 4/5/6, los tres terminaron `done` y la pasada añadió 4
     ideas nuevas sin tocar la aprobada ni la descartada.
+
+- 2026-08-21 — **Unidad A3: checkpoint de guion en el dashboard**, cierra el hito 2:
+  - `core/pacing.py`: se sube desde `script/writer.py` la cuenta de palabras, segundos de
+    locución, marcas de tiempo por capítulo y el formato `MM:SS`. El editor del dashboard
+    necesita la misma cuenta para rehacer recuentos y marcas cuando el humano edita el texto, y
+    `web/` no puede importar de `script/` sin romper el blackboard.
+  - `web/queries.py` + `web/server.py`: editor en `/scripts` con checkpoint humano completo
+    (listar, leer, editar por capítulos, guardar sin decidir, aprobar, descartar), todo bajo
+    `BEGIN IMMEDIATE` con el mismo criterio de dedupe que ya tenía el checkpoint de ideas.
+  - **Botón reintentar**: `queries.retry_job` reencola un job `failed` con el mismo tipo y
+    payload (no revive el viejo, que queda de rastro con su error). Dedupe: no reencola si ya hay
+    un job del mismo tipo y payload pendiente o en ejecución. Resuelve el bug de la idea cuyo
+    guion fallaba y desaparecía de todas las vistas: como sigue `used` (∈
+    `writer.WRITABLE_IDEA_STATUSES`), reencolar basta.
+  - **Botón reescribir**: `queries.rewrite_script` pide un guion nuevo para la idea de un video
+    `rejected`. Requirió que `writer._existing_video` deje de contar un video `rejected` como
+    "ya hay guion" para esa idea — si no, el guardarraíl que evita pisar un guion en curso
+    también bloqueaba escribir uno nuevo tras un guion descartado. El rechazado queda de
+    historial; nace una fila aparte.
+  - **409 amigable**: los handlers de `web/server.py` que antes lanzaban `HTTPException(409)` en
+    un doble clic (aprobar/descartar idea, aprobar/guardar/descartar guion) ahora atrapan la
+    excepción de "estado bloqueado" y redirigen con el aviso, igual que cualquier otro mensaje
+    del dashboard. `NotFound` (404, el recurso no existe) se mantiene como excepción real.
+  - **La idea legado en `approved`** (única fila real, id 8, del hito 1): se resolvió con un
+    `UPDATE` manual — `used` + su `write_script` encolado — en vez de código nuevo para un caso
+    de una sola fila. Verificado en vivo: el job terminó `done` con guion escrito.
+  - Verificado en ejecución, no solo en tests (953 passed): doble clic en aprobar da aviso en el
+    ranking, no una traza; un `write_script` forzado a fallar se reintenta desde Sistema y el
+    job nuevo hereda el payload; un guion rechazado se reescribe y la fila vieja queda intacta
+    mientras nace una nueva en `script_draft`.
 
 ## Problemas resueltos
 
@@ -379,10 +410,10 @@ Suite completa tras las dos rondas: **611 passed, 0 xfailed**.
 - **Los subreddits de `settings.yaml` están sin verificar**: se eligieron por criterio y no se
   pudieron comprobar por el 403. Uno que no exista simplemente se salta.
 - **trendspy** quedó fuera a propósito como mejora futura del scorer (fuente opcional degradable).
-- **Un job `failed` no tiene camino de vuelta**: `requeue_stale_running` solo rescata los `running`,
-  el scheduler solo reencola `research_daily` y el dashboard no tiene ninguna acción que reviva un
-  job. Una idea cuyo `write_script` falló por cuota se queda sin guion para siempre. La salida
-  decidida con el usuario es el botón de reintento del dashboard (unidad A3).
+- **La base de conocimiento (`knowledge`) no tiene FTS5**, aunque el roadmap del hito 2 lo pedía.
+  Hoy es una tabla con índices simples por `kind` y `niche`; `writer._knowledge()` filtra con
+  `WHERE` normal y le basta porque las filas son pocas (la llena el cerebro del hito 5, que
+  todavía no existe). Índice de texto completo cuando el volumen lo justifique.
 - **`cpm_for_niche` y `quota_apis` repiten el patrón del YAML vacío** que sí se arregló en
   `script_format.by_niche` y en `subreddits` (clave presente sin valor -> `None` -> revienta el
   `.get`/`sorted` de después). Se dejan sin tocar por implausibles, con el radio de explosión

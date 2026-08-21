@@ -24,13 +24,18 @@ El corazón del sistema: encontrar sistemáticamente mejores oportunidades que o
 vistas, así que las ideas salen casi solo de titulares de noticias. Ver [README.md](README.md).
 Reddit responde 403 a esta IP: la señal degrada con su motivo registrado en la base.
 
-## Hito 2 — Guiones + Base de conocimiento — pendiente
+## Hito 2 — Guiones + Base de conocimiento — en curso
 
-- [ ] 5 formatos de guion (misterio, educativo, storytelling, top-N, noticias)
-- [ ] Knowledge base (hooks, CTA, lecciones) con FTS5; el LLM la consulta antes de escribir
-- [ ] Checkpoint 1: editor de guion en el dashboard
+- [x] 5 formatos de guion (misterio, educativo, storytelling, top-N, noticias) — hecho ✅
+- [ ] Knowledge base (hooks, CTA, lecciones) con FTS5; el LLM la consulta antes de escribir.
+      La tabla `knowledge` existe y el writer ya la consulta (sin FTS5, con SQL normal); el
+      índice de texto completo queda pendiente hasta que el volumen lo justifique
+- [x] Checkpoint 1: editor de guion en el dashboard — hecho ✅ (2026-08-21). Incluye reescribir
+      un guion rechazado, reintentar un job de guion fallido, y aviso amigable en vez de la
+      página de error de FastAPI ante un doble clic
 
-**Demo:** aprobar una idea → leer y editar un guion de 6–10 min con capítulos.
+**Demo:** aprobar una idea → leer y editar un guion de 6–10 min con capítulos. **Ya funciona**;
+falta solo el índice FTS5 de la base de conocimiento, que no bloquea el hito 3.
 
 ## Hito 3 — Producción de video — pendiente
 
