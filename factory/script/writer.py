@@ -27,7 +27,7 @@ import sqlite3
 from datetime import datetime, timezone
 from typing import Any
 
-from factory.core import config, llm
+from factory.core import config, llm, pacing
 from factory.core.db import get_conn, transaction
 from factory.core.models import Idea, Job, can_transition
 from factory.core.queue import JobWorker, PermanentFailure, StopRequested, should_stop
@@ -40,10 +40,9 @@ JOB_TYPE = "write_script"
 # Estado en el que nace el guion: el humano lo aprueba en el checkpoint 1.
 SCRIPT_STATUS = "script_draft"
 
-# Ritmo de locución en español con el que se estiman las duraciones. Es una
-# estimación de escritorio: la duración real solo se sabe cuando el hito 3
-# sintetice el audio, y entonces se recalcula con la de verdad.
-WORDS_PER_MINUTE = 145
+# El ritmo de locución y las marcas de tiempo viven en `core/pacing.py`: el
+# editor del dashboard las rehace cuando el humano cambia el texto y las dos
+# estimaciones tienen que salir de la misma cuenta.
 
 # Lo que se le pide al modelo: 1000-1400 palabras son 7-10 minutos leídos. El
 # suelo va por encima de los 6 minutos del objetivo porque el modelo se queda
@@ -352,7 +351,7 @@ def _validated_script(respuesta: Any, format_id: str) -> dict[str, Any]:
     cierre = _texto(respuesta.get("cierre"), "el cierre")
     capitulos = _chapters(respuesta.get("capitulos"))
 
-    palabras = _count_words(gancho) + _count_words(cierre)
+    palabras = pacing.count_words(gancho) + pacing.count_words(cierre)
     palabras += sum(int(capitulo["words"]) for capitulo in capitulos)
     if not MIN_WORDS <= palabras <= MAX_WORDS:
         raise ValueError(
@@ -365,11 +364,11 @@ def _validated_script(respuesta: Any, format_id: str) -> dict[str, Any]:
         "model": llm.MODEL,
         "generated_at": _rfc3339(datetime.now(timezone.utc)),
         "hook": gancho,
-        "chapters": _with_timings(gancho, capitulos),
+        "chapters": pacing.with_start_times(gancho, capitulos),
         "outro": cierre,
         "word_count": palabras,
-        "words_per_minute": WORDS_PER_MINUTE,
-        "estimated_seconds": _seconds(palabras),
+        "words_per_minute": pacing.WORDS_PER_MINUTE,
+        "estimated_seconds": pacing.speech_seconds(palabras),
     }
 
 
@@ -388,7 +387,7 @@ def _chapters(valor: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             raise ValueError(f"el capítulo {numero} no es un objeto JSON")
         narracion = _texto(item.get("narracion"), f"la narración del capítulo {numero}")
-        palabras = _count_words(narracion)
+        palabras = pacing.count_words(narracion)
         if palabras < MIN_CHAPTER_WORDS:
             raise ValueError(
                 f"el capítulo {numero} tiene {palabras} palabras (mínimo"
@@ -404,40 +403,11 @@ def _chapters(valor: Any) -> list[dict[str, Any]]:
     return capitulos
 
 
-def _with_timings(gancho: str, capitulos: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Añade a cada capítulo el segundo en el que empieza, estimado.
-
-    Las marcas salen del número de palabras y de `WORDS_PER_MINUTE`: la duración
-    real solo se sabe cuando el hito 3 sintetice el audio, y ahí se recalculan.
-    Sirven para ver de un vistazo si el guion se va de largo y para el listado
-    de capítulos de la descripción.
-
-    El primer capítulo empieza en 0 aunque el gancho se lea antes: YouTube exige
-    que el primer marcador sea 00:00 y el gancho no es un capítulo aparte.
-    """
-    transcurrido = _seconds(_count_words(gancho))
-    marcados: list[dict[str, Any]] = []
-    for indice, capitulo in enumerate(capitulos):
-        marcados.append({**capitulo, "start_sec": 0 if indice == 0 else transcurrido})
-        transcurrido += _seconds(int(capitulo["words"]))
-    return marcados
-
-
 def _texto(valor: Any, campo: str) -> str:
     """Campo de texto obligatorio del modelo. `ValueError` si falta o va vacío."""
     if not isinstance(valor, str) or not valor.strip():
         raise ValueError(f"falta {campo} en la respuesta del modelo, o no es texto")
     return valor.strip()
-
-
-def _count_words(texto: str) -> int:
-    """Palabras del texto, contadas como las cuenta un locutor: separadas por espacios."""
-    return len(texto.split())
-
-
-def _seconds(palabras: int) -> int:
-    """Segundos que se tarda en leer ese número de palabras en voz alta."""
-    return round(palabras * 60 / WORDS_PER_MINUTE)
 
 
 def _rfc3339(momento: datetime) -> str:
@@ -471,7 +441,8 @@ def _save_script(
                 "INSERT INTO videos (idea_id, kind, format, title, chapters,"
                 " script_json, status) VALUES (?, 'long', ?, ?, ?, ?, ?)",
                 (
-                    idea.id, format_id, idea.title, _chapter_list(guion["chapters"]),
+                    idea.id, format_id, idea.title,
+                    pacing.chapter_list(guion["chapters"]),
                     json.dumps(guion, ensure_ascii=False), SCRIPT_STATUS,
                 ),
             )
@@ -488,7 +459,7 @@ def _save_script(
             "UPDATE videos SET format = ?, title = ?, chapters = ?, script_json = ?,"
             " status = ?, updated_at = datetime('now') WHERE id = ?",
             (
-                format_id, idea.title, _chapter_list(guion["chapters"]),
+                format_id, idea.title, pacing.chapter_list(guion["chapters"]),
                 json.dumps(guion, ensure_ascii=False), SCRIPT_STATUS, fila["id"],
             ),
         )
@@ -517,16 +488,3 @@ def _existing_video(conn: sqlite3.Connection, idea_id: int | None) -> sqlite3.Ro
         " ORDER BY id LIMIT 1",
         (idea_id,),
     ).fetchone()
-
-
-def _chapter_list(capitulos: list[dict[str, Any]]) -> str:
-    """Los capítulos con su marca de tiempo, en el formato que lee YouTube."""
-    return "\n".join(
-        f"{_mmss(int(capitulo['start_sec']))} {capitulo['title']}"
-        for capitulo in capitulos
-    )
-
-
-def _mmss(segundos: int) -> str:
-    """Segundos a 'MM:SS'. Los guiones son de minutos, nunca de horas."""
-    return f"{segundos // 60:02d}:{segundos % 60:02d}"

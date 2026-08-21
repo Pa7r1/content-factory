@@ -38,7 +38,7 @@ Lo que existe hoy son tres módulos, no más:
 
 ```
 factory/core/       db, models, queue, quota, scheduler, config,
-                    http_util, llm, text                          ← lo único compartido
+                    http_util, llm, text, pacing                  ← lo único compartido
 factory/research/   fuentes + candidates + scorer + pipeline      ← hito 1, hecho
 factory/web/        dashboard FastAPI + Jinja2                    ← hito 1, hecho
 ```
