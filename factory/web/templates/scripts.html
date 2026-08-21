@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block titulo %}Guiones · Content Factory{% endblock %}
+
+{% block contenido %}
+<h1 class="titulo-vista">Guiones por revisar</h1>
+
+{% if not guiones %}
+  <p class="vacio">
+    No hay ningún guion esperando.
+    <span class="vacio-sugerencia">
+      Cuando apruebes una idea en <a href="/">Ideas</a>, su guion aparece aquí en unos minutos.
+    </span>
+  </p>
+{% endif %}
+
+<ul class="guiones">
+{% for guion in guiones %}
+  <li class="guiones-fila">
+    <article class="guion" id="guion-{{ guion.video_id }}">
+      <h2 class="guion-titulo">
+        <a class="guion-enlace" href="/scripts/{{ guion.video_id }}">{{ guion.title }}</a>
+      </h2>
+      <p class="guion-meta">
+        {% if guion.niche %}<span class="guion-nicho">{{ guion.niche.replace('_', ' ') }}</span>{% endif %}
+        {% if guion.format %}<span class="guion-formato">{{ guion.format }}</span>{% endif %}
+        <span class="guion-capitulos">{{ guion.chapter_count }} capítulos</span>
+        {% if guion.word_count %}<span class="guion-palabras">{{ guion.word_count }} palabras</span>{% endif %}
+        {% if guion.estimated_minutes %}<span class="guion-duracion">~{{ guion.estimated_minutes }} min</span>{% endif %}
+        {% if guion.edited %}<span class="guion-editado">con tus cambios</span>{% endif %}
+        <span class="guion-fecha">{{ guion.updated_at[:16] }}</span>
+      </p>
+      <p class="guion-acciones">
+        <a class="boton boton--leer" href="/scripts/{{ guion.video_id }}">Leer y decidir</a>
+      </p>
+    </article>
+  </li>
+{% endfor %}
+</ul>
+{% endblock %}

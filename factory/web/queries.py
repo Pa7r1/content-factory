@@ -5,9 +5,11 @@ El dashboard es un consumidor más del blackboard: lee `ideas`, `jobs` y
 Devuelve estructuras ya listas para la plantilla, para que `server.py` se quede
 solo con las rutas y las plantillas no tengan lógica.
 
-Lo único que escribe la web es la decisión sobre una idea —aprobarla o
-descartarla—, y vive también aquí para no repartir el SQL en dos ficheros.
-Aprobar además encola el guion, en la misma transacción.
+Lo que escribe la web son las dos decisiones del humano que hay hasta hoy: la
+que toma sobre una idea —aprobarla o descartarla— y la que toma sobre un guion
+—editarlo, aprobarlo o descartarlo—. Viven también aquí para no repartir el SQL
+en dos ficheros. Aprobar una idea además encola su guion, en la misma
+transacción.
 """
 
 from __future__ import annotations
@@ -16,10 +18,12 @@ import json
 import logging
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from factory.core import config, queue
+from factory.core import config, pacing, queue
 from factory.core.db import transaction
+from factory.core.models import assert_transition
 from factory.core.quota import CUTOFF_RATIO, usage_today
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,13 @@ LOCKED_STATUSES: frozenset[str] = frozenset({USED_STATUS, REJECTED_STATUS})
 # se hablan por la base (blackboard). Es el mismo trato que tienen
 # `core.scheduler.RESEARCH_JOB_ID` y `research.pipeline.JOB_TYPE`.
 WRITE_SCRIPT_JOB_TYPE = "write_script"
+
+# Los tres estados de `videos` entre los que se mueve el checkpoint del guion.
+# La máquina de estados que los valida vive en `core/models.py`; aquí solo se
+# nombran para no repetir la cadena por el fichero.
+SCRIPT_DRAFT_STATUS = "script_draft"
+SCRIPT_APPROVED_STATUS = "script_approved"
+SCRIPT_REJECTED_STATUS = "rejected"
 
 # Qué fuente alimenta cada sub-señal de cada componente del score. Sirve para
 # explicar en el desglose POR QUÉ falta un trozo: `score_details.missing_signals`
@@ -76,6 +87,18 @@ class IdeaNotFound(LookupError):
 
 class IdeaLocked(RuntimeError):
     """La idea está en un estado que el dashboard no puede cambiar."""
+
+
+class ScriptNotFound(LookupError):
+    """No existe ningún video con ese id."""
+
+
+class ScriptLocked(RuntimeError):
+    """El guion ya no espera decisión: alguien la tomó antes."""
+
+
+class ScriptInvalid(ValueError):
+    """La edición que llegó del formulario dejaría el guion inservible."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +144,68 @@ class ApprovedIdea:
     id: int
     title: str
     job_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptSummary:
+    """Una línea de la lista de guiones que esperan el checkpoint humano."""
+
+    video_id: int
+    title: str
+    niche: str | None
+    format: str | None
+    chapter_count: int
+    word_count: int | None
+    estimated_minutes: float | None
+    edited: bool
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptChapterView:
+    """Un capítulo tal como se lee y se edita en el checkpoint."""
+
+    number: int
+    title: str
+    narration: str
+    words: int
+    start_mmss: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptDetail:
+    """El guion entero, listo para leerlo y para rellenar el editor."""
+
+    video_id: int
+    title: str
+    niche: str | None
+    format: str | None
+    model: str | None
+    generated_at: str | None
+    edited: bool
+    hook: str
+    chapters: list[ScriptChapterView]
+    outro: str
+    word_count: int | None
+    estimated_minutes: float | None
+    updated_at: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChapterEdit:
+    """Un capítulo tal como lo devuelve el formulario del editor."""
+
+    title: str
+    narration: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScriptEdit:
+    """El texto que el humano dejó en el editor, ya limpio."""
+
+    hook: str
+    outro: str
+    chapters: tuple[ChapterEdit, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,6 +415,336 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# Guiones: el checkpoint humano
+# ---------------------------------------------------------------------------
+
+
+def scripts_awaiting_review(
+    conn: sqlite3.Connection, *, limit: int = 50
+) -> list[ScriptSummary]:
+    """Guiones en borrador, el que lleva más tiempo esperando primero.
+
+    El nicho sale de la idea con un LEFT JOIN: `videos.idea_id` admite NULL y un
+    guion sin idea detrás tiene que seguir apareciendo aquí. Si desaparece de la
+    lista, deja de existir para el humano y el video se queda parado para siempre.
+    """
+    filas = conn.execute(
+        """
+        SELECT v.id, v.title, v.format, v.script_json, v.updated_at, i.niche
+          FROM videos v
+          LEFT JOIN ideas i ON i.id = v.idea_id
+         WHERE v.status = ?
+         ORDER BY v.updated_at, v.id
+         LIMIT ?
+        """,
+        (SCRIPT_DRAFT_STATUS, limit),
+    ).fetchall()
+    return [_to_script_summary(fila) for fila in filas]
+
+
+def script_for_review(conn: sqlite3.Connection, video_id: int) -> ScriptDetail:
+    """El guion completo para leerlo y editarlo, si sigue esperando decisión."""
+    fila = conn.execute(
+        """
+        SELECT v.id, v.title, v.status, v.format, v.script_json, v.updated_at,
+               i.niche
+          FROM videos v
+          LEFT JOIN ideas i ON i.id = v.idea_id
+         WHERE v.id = ?
+        """,
+        (video_id,),
+    ).fetchone()
+    _assert_en_borrador(fila, video_id)
+    return _to_script_detail(fila)
+
+
+def save_script_draft(
+    conn: sqlite3.Connection, video_id: int, edit: ScriptEdit
+) -> str:
+    """Guarda la edición sin decidir nada: el guion sigue en borrador.
+
+    Existe para que el humano pueda dejar a medias un guion de 1.400 palabras sin
+    tener que aprobarlo para no perder lo escrito.
+    """
+    with transaction(conn):
+        fila = _guion_en_borrador(conn, video_id)
+        guion = _with_edit(_script_json(fila), edit)
+        _write_script(conn, video_id, guion, SCRIPT_DRAFT_STATUS)
+    logger.info("Guion del video %d guardado; sigue en borrador", video_id)
+    return str(fila["title"] or "")
+
+
+def approve_script(
+    conn: sqlite3.Connection, video_id: int, edit: ScriptEdit
+) -> str:
+    """Guarda la edición y aprueba el guion, todo en la misma transacción.
+
+    Leer el estado, escribir el texto y mover el video son UNA operación bajo
+    `BEGIN IMMEDIATE`, no tres: en pasos separados, dos pestañas abiertas sobre
+    el mismo guion pasan las dos el control y la segunda pisa el texto de un
+    video que ya estaba aprobado. Es la misma carrera que ya mordió en el claim
+    de la cola y en el dedupe de investigación.
+    """
+    with transaction(conn):
+        fila = _guion_en_borrador(conn, video_id)
+        assert_transition(fila["status"], SCRIPT_APPROVED_STATUS)
+        guion = _with_edit(_script_json(fila), edit)
+        _write_script(conn, video_id, guion, SCRIPT_APPROVED_STATUS)
+    logger.info("Guion del video %d aprobado -> %s", video_id, SCRIPT_APPROVED_STATUS)
+    return str(fila["title"] or "")
+
+
+def reject_script(conn: sqlite3.Connection, video_id: int) -> str:
+    """Descarta el guion: el video no se produce.
+
+    No guarda lo que hubiera en el editor. Quien descarta no quiere conservar su
+    edición, y escribirla dejaría en la base un texto que nadie va a volver a
+    mirar como si fuera el guion bueno.
+    """
+    with transaction(conn):
+        fila = _guion_en_borrador(conn, video_id)
+        assert_transition(fila["status"], SCRIPT_REJECTED_STATUS)
+        conn.execute(
+            "UPDATE videos SET status = ?, updated_at = datetime('now') WHERE id = ?",
+            (SCRIPT_REJECTED_STATUS, video_id),
+        )
+    logger.info("Guion del video %d descartado -> %s", video_id, SCRIPT_REJECTED_STATUS)
+    return str(fila["title"] or "")
+
+
+def _guion_en_borrador(conn: sqlite3.Connection, video_id: int) -> sqlite3.Row:
+    """Fila del video si su guion sigue esperando decisión.
+
+    Se llama SIEMPRE dentro de la transacción que va a escribir: comprobar fuera
+    y escribir después son dos operaciones, y entre ellas cabe la decisión de
+    otra pestaña.
+    """
+    fila = conn.execute(
+        "SELECT id, title, status, script_json FROM videos WHERE id = ?",
+        (video_id,),
+    ).fetchone()
+    _assert_en_borrador(fila, video_id)
+    return fila
+
+
+def _assert_en_borrador(fila: sqlite3.Row | None, video_id: int) -> None:
+    """Corta si el video no existe o si su guion ya no admite decisión."""
+    if fila is None:
+        raise ScriptNotFound(f"no existe el video {video_id}")
+    if fila["status"] != SCRIPT_DRAFT_STATUS:
+        raise ScriptLocked(
+            f"el guion del video {video_id} está en estado {fila['status']!r}"
+            " y ya no espera decisión"
+        )
+
+
+def _write_script(
+    conn: sqlite3.Connection, video_id: int, guion: dict[str, Any], status: str
+) -> None:
+    """Escribe el guion y el estado del video. Siempre dentro de una transacción.
+
+    `videos.chapters` se rehace con el guion: es la lista de marcadores que va a
+    la descripción de YouTube, y si el humano cambió el texto las marcas viejas
+    apuntan a segundos que ya no existen.
+    """
+    conn.execute(
+        "UPDATE videos SET script_json = ?, chapters = ?, status = ?,"
+        " updated_at = datetime('now') WHERE id = ?",
+        (
+            json.dumps(guion, ensure_ascii=False),
+            pacing.chapter_list(_stored_chapters(guion)),
+            status,
+            video_id,
+        ),
+    )
+
+
+def _with_edit(guion: dict[str, Any], edit: ScriptEdit) -> dict[str, Any]:
+    """El guion con el texto del humano, y los recuentos y las marcas rehechos.
+
+    Si no cambió ni una coma se devuelve el guion tal cual: marcarlo como editado
+    porque alguien pulsó "Aprobar" sin tocar nada sería mentir justo en el dato
+    con el que el hito 5 va a medir cuánto hay que corregirle al modelo.
+
+    Lo que escribió el modelo se conserva en `original`, y solo se guarda la
+    primera vez: en la segunda edición el original ya está dentro y pisarlo
+    dejaría como "lo que escribió el modelo" lo que escribió el humano.
+    """
+    _assert_completo(edit)
+    if not _cambia_el_texto(guion, edit):
+        return guion
+
+    capitulos = [
+        {
+            "title": capitulo.title,
+            "narration": capitulo.narration,
+            "words": pacing.count_words(capitulo.narration),
+        }
+        for capitulo in edit.chapters
+    ]
+    palabras = (
+        pacing.count_words(edit.hook)
+        + pacing.count_words(edit.outro)
+        + sum(int(capitulo["words"]) for capitulo in capitulos)
+    )
+    return {
+        **guion,
+        "hook": edit.hook,
+        "chapters": pacing.with_start_times(edit.hook, capitulos),
+        "outro": edit.outro,
+        "word_count": palabras,
+        "words_per_minute": pacing.WORDS_PER_MINUTE,
+        "estimated_seconds": pacing.speech_seconds(palabras),
+        "edited_by_human": True,
+        "edited_at": _ahora_rfc3339(),
+        "original": guion.get("original") or guion,
+    }
+
+
+def _assert_completo(edit: ScriptEdit) -> None:
+    """Corta si la edición deja un hueco en el guion.
+
+    No se comprueban las bandas de palabras que el writer le exige al modelo:
+    cuánto dura su video lo decide el humano. Lo único que no puede quedar es un
+    hueco, porque el hito 3 locuta este texto tal cual.
+    """
+    if not edit.hook:
+        raise ScriptInvalid("el gancho no puede quedar vacío")
+    if not edit.outro:
+        raise ScriptInvalid("el cierre no puede quedar vacío")
+    if not edit.chapters:
+        raise ScriptInvalid("un guion sin capítulos no se puede producir")
+    for numero, capitulo in enumerate(edit.chapters, start=1):
+        if not capitulo.title:
+            raise ScriptInvalid(f"el capítulo {numero} se quedó sin título")
+        if not capitulo.narration:
+            raise ScriptInvalid(f"el capítulo {numero} se quedó sin narración")
+
+
+def _cambia_el_texto(guion: dict[str, Any], edit: ScriptEdit) -> bool:
+    """True si la edición trae algo distinto de lo que ya estaba guardado."""
+    if edit.hook != guion.get("hook") or edit.outro != guion.get("outro"):
+        return True
+    guardados = _stored_chapters(guion)
+    if len(guardados) != len(edit.chapters):
+        return True
+    for guardado, editado in zip(guardados, edit.chapters):
+        if guardado.get("title") != editado.title:
+            return True
+        if guardado.get("narration") != editado.narration:
+            return True
+    return False
+
+
+def _to_script_summary(fila: sqlite3.Row) -> ScriptSummary:
+    """Fila de `videos` → línea de la lista de guiones."""
+    guion = _load_script(fila["script_json"], int(fila["id"]))
+    return ScriptSummary(
+        video_id=int(fila["id"]),
+        title=str(fila["title"] or ""),
+        niche=fila["niche"],
+        format=fila["format"],
+        chapter_count=len(_stored_chapters(guion)),
+        word_count=_as_int(guion.get("word_count")),
+        estimated_minutes=_as_minutes(guion.get("estimated_seconds")),
+        edited=bool(guion.get("edited_by_human")),
+        updated_at=str(fila["updated_at"] or ""),
+    )
+
+
+def _to_script_detail(fila: sqlite3.Row) -> ScriptDetail:
+    """Fila de `videos` → guion completo para leer y editar."""
+    guion = _load_script(fila["script_json"], int(fila["id"]))
+    return ScriptDetail(
+        video_id=int(fila["id"]),
+        title=str(fila["title"] or ""),
+        niche=fila["niche"],
+        format=fila["format"],
+        model=_as_text(guion.get("model")),
+        generated_at=_as_text(guion.get("generated_at")),
+        edited=bool(guion.get("edited_by_human")),
+        hook=_as_text(guion.get("hook")) or "",
+        chapters=_chapter_views(guion),
+        outro=_as_text(guion.get("outro")) or "",
+        word_count=_as_int(guion.get("word_count")),
+        estimated_minutes=_as_minutes(guion.get("estimated_seconds")),
+        updated_at=str(fila["updated_at"] or ""),
+    )
+
+
+def _chapter_views(guion: dict[str, Any]) -> list[ScriptChapterView]:
+    """Los capítulos guardados, numerados y con su marca en MM:SS."""
+    vistas: list[ScriptChapterView] = []
+    for numero, capitulo in enumerate(_stored_chapters(guion), start=1):
+        vistas.append(
+            ScriptChapterView(
+                number=numero,
+                title=_as_text(capitulo.get("title")) or "",
+                narration=_as_text(capitulo.get("narration")) or "",
+                words=_as_int(capitulo.get("words")) or 0,
+                start_mmss=pacing.mmss(_as_int(capitulo.get("start_sec")) or 0),
+            )
+        )
+    return vistas
+
+
+def _stored_chapters(guion: dict[str, Any]) -> list[dict[str, Any]]:
+    """Los capítulos del JSON, sin lo que no sea un objeto."""
+    capitulos = guion.get("chapters")
+    if not isinstance(capitulos, list):
+        return []
+    return [capitulo for capitulo in capitulos if isinstance(capitulo, dict)]
+
+
+def _script_json(fila: sqlite3.Row) -> dict[str, Any]:
+    """`script_json` de la fila ya decodificado."""
+    return _load_script(fila["script_json"], int(fila["id"]))
+
+
+def _load_script(raw: str | None, video_id: int) -> dict[str, Any]:
+    """`script_json` decodificado. Un JSON roto no puede tumbar el checkpoint.
+
+    Con {} el editor sale sin capítulos y guardar da un error explícito, que es
+    mucho mejor que una traza de 500 delante del único humano que puede
+    desatascar el video.
+    """
+    if not raw:
+        return {}
+    try:
+        guion = json.loads(raw)
+    except ValueError:
+        logger.warning("script_json ilegible en el video %d", video_id)
+        return {}
+    return guion if isinstance(guion, dict) else {}
+
+
+def _as_text(value: Any) -> str | None:
+    """Campo de texto del JSON, o None si no lo es."""
+    return value if isinstance(value, str) else None
+
+
+def _as_int(value: Any) -> int | None:
+    """Número del JSON a int, tolerando None y basura."""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_minutes(segundos: Any) -> float | None:
+    """Segundos estimados a minutos con un decimal, para el resumen."""
+    valor = _as_int(segundos)
+    return round(valor / 60, 1) if valor is not None else None
+
+
+def _ahora_rfc3339() -> str:
+    """Instante actual en UTC, con el mismo formato que escribe el writer."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 # ---------------------------------------------------------------------------

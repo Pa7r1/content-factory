@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block titulo %}{{ guion.title }} · Content Factory{% endblock %}
+
+{% block contenido %}
+<p class="migas"><a href="/scripts">Guiones por revisar</a></p>
+
+<h1 class="titulo-vista">{{ guion.title }}</h1>
+
+<p class="guion-meta">
+  {% if guion.niche %}<span class="guion-nicho">{{ guion.niche.replace('_', ' ') }}</span>{% endif %}
+  {% if guion.format %}<span class="guion-formato">{{ guion.format }}</span>{% endif %}
+  <span class="guion-capitulos">{{ guion.chapters|length }} capítulos</span>
+  {% if guion.word_count %}<span class="guion-palabras">{{ guion.word_count }} palabras</span>{% endif %}
+  {% if guion.estimated_minutes %}<span class="guion-duracion">~{{ guion.estimated_minutes }} min</span>{% endif %}
+  {% if guion.model %}<span class="guion-modelo">lo escribió {{ guion.model }}</span>{% endif %}
+  {% if guion.edited %}<span class="guion-editado">con tus cambios</span>{% endif %}
+</p>
+
+<form class="editor" method="post" action="/scripts/{{ guion.video_id }}/save">
+
+  <div class="campo campo--gancho">
+    <label class="campo-nombre" for="gancho">Gancho</label>
+    <textarea class="campo-texto" id="gancho" name="gancho" rows="4" required>{{ guion.hook }}</textarea>
+  </div>
+
+  {% for capitulo in guion.chapters %}
+  <fieldset class="capitulo">
+    <legend class="capitulo-cabecera">
+      Capítulo {{ capitulo.number }}
+      <span class="capitulo-marca">entra en {{ capitulo.start_mmss }}</span>
+      <span class="capitulo-palabras">{{ capitulo.words }} palabras</span>
+    </legend>
+    <div class="campo campo--titulo">
+      <label class="campo-nombre" for="titulo-{{ capitulo.number }}">Título</label>
+      <input class="campo-linea" id="titulo-{{ capitulo.number }}" type="text"
+             name="titulo" value="{{ capitulo.title }}" required>
+    </div>
+    <div class="campo campo--narracion">
+      <label class="campo-nombre" for="narracion-{{ capitulo.number }}">Narración</label>
+      <textarea class="campo-texto" id="narracion-{{ capitulo.number }}"
+                name="narracion" rows="10" required>{{ capitulo.narration }}</textarea>
+    </div>
+  </fieldset>
+  {% endfor %}
+
+  <div class="campo campo--cierre">
+    <label class="campo-nombre" for="cierre">Cierre</label>
+    <textarea class="campo-texto" id="cierre" name="cierre" rows="4" required>{{ guion.outro }}</textarea>
+  </div>
+
+  <p class="editor-nota">
+    Las marcas de tiempo y el recuento de palabras se rehacen al guardar.
+  </p>
+
+  <div class="editor-acciones">
+    <button class="boton boton--guardar" type="submit">Guardar cambios</button>
+    <button class="boton boton--aprobar" type="submit"
+            formaction="/scripts/{{ guion.video_id }}/approve">Aprobar guion</button>
+    <button class="boton boton--descartar" type="submit" formnovalidate
+            formaction="/scripts/{{ guion.video_id }}/reject">Descartar</button>
+  </div>
+
+</form>
+{% endblock %}

@@ -95,19 +95,115 @@ def _mensaje_del_redirect(respuesta) -> str:
     return unquote(location.split("mensaje=", 1)[1])
 
 
+def _palabras(cuantas: int) -> str:
+    """Un texto con exactamente ese número de palabras."""
+    return " ".join(["palabra"] * cuantas)
+
+
+# Un `script_json` como el que deja el writer. Las marcas están escritas a mano
+# —145 palabras por minuto— igual que en `tests/test_pacing.py`. La segunda
+# narración lleva un salto de línea porque el navegador lo devuelve como salto
+# de Windows y eso no puede contar como una edición.
+GUION: dict[str, Any] = {
+    "model": "gemini-2.5-flash",
+    "generated_at": "2026-08-14T10:00:00Z",
+    "hook": _palabras(5),
+    "chapters": [
+        {"title": "El origen", "narration": _palabras(10), "words": 10, "start_sec": 0},
+        {
+            "title": "La grieta",
+            "narration": "primer parrafo\n" + _palabras(19),
+            "words": 20,
+            "start_sec": 6,
+        },
+    ],
+    "outro": _palabras(6),
+    "word_count": 41,
+    "words_per_minute": 145,
+    "estimated_seconds": 17,
+}
+
+
+def _insertar_video(
+    conn: sqlite3.Connection,
+    *,
+    title: str = "Un guion por revisar",
+    status: str = "script_draft",
+    guion: dict[str, Any] | None = None,
+) -> int:
+    contenido = json.loads(json.dumps(guion if guion is not None else GUION))
+    cur = conn.execute(
+        """
+        INSERT INTO videos (kind, format, title, chapters, script_json, status)
+        VALUES ('long', 'misterio', ?, ?, ?, ?)
+        """,
+        (
+            title,
+            "\n".join(
+                f"{c['start_sec'] // 60:02d}:{c['start_sec'] % 60:02d} {c['title']}"
+                for c in contenido["chapters"]
+            ),
+            json.dumps(contenido, ensure_ascii=False),
+            status,
+        ),
+    )
+    return int(cur.lastrowid)
+
+
+def _guion_guardado(conn: sqlite3.Connection, video_id: int) -> dict[str, Any]:
+    return json.loads(
+        conn.execute(
+            "SELECT script_json FROM videos WHERE id = ?", (video_id,)
+        ).fetchone()["script_json"]
+    )
+
+
+def _estado_del_video(conn: sqlite3.Connection, video_id: int) -> str:
+    return conn.execute(
+        "SELECT status FROM videos WHERE id = ?", (video_id,)
+    ).fetchone()["status"]
+
+
+def _formulario(
+    *,
+    gancho: str | None = None,
+    cierre: str | None = None,
+    titulos: list[str] | None = None,
+    narraciones: list[str] | None = None,
+    guion: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Lo que manda el editor: dos listas paralelas en orden de documento."""
+    base = guion if guion is not None else GUION
+    return {
+        "gancho": base["hook"] if gancho is None else gancho,
+        "cierre": base["outro"] if cierre is None else cierre,
+        "titulo": [c["title"] for c in base["chapters"]] if titulos is None else titulos,
+        "narracion": (
+            [c["narration"] for c in base["chapters"]]
+            if narraciones is None
+            else narraciones
+        ),
+    }
+
+
 # ---------------------------------------------------------------------------
 # El router expone lo que el dashboard necesita
 # ---------------------------------------------------------------------------
 
 
-def test_el_router_expone_las_dos_vistas_y_las_tres_acciones():
+def test_el_router_expone_las_cuatro_vistas_y_las_seis_acciones():
     rutas = {(ruta.path, tuple(sorted(ruta.methods))) for ruta in router.routes}
 
     assert rutas == {
         ("/", ("GET",)),
         ("/system", ("GET",)),
+        ("/scripts", ("GET",)),
+        ("/scripts/{video_id}", ("GET",)),
         ("/ideas/{idea_id}/approve", ("POST",)),
         ("/ideas/{idea_id}/reject", ("POST",)),
+        ("/scripts/{video_id}/save", ("POST",)),
+        ("/scripts/{video_id}/approve", ("POST",)),
+        ("/scripts/{video_id}/reject", ("POST",)),
         ("/research/run", ("POST",)),
     }
 
@@ -371,6 +467,274 @@ def test_un_id_que_no_es_un_numero_no_llega_a_la_base(
     respuesta = client.post("/ideas/borra-todo/approve")
 
     assert respuesta.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Vista de guiones: el checkpoint humano
+# ---------------------------------------------------------------------------
+
+
+def test_la_pestana_de_guiones_lista_los_que_esperan_decision(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn, title="El misterio del faro")
+    _insertar_video(conn, title="Ya decidido", status="script_approved")
+
+    html = client.get("/scripts").text
+
+    assert "El misterio del faro" in html
+    assert f'href="/scripts/{video_id}"' in html
+    assert "Ya decidido" not in html
+
+
+def test_sin_guiones_la_pestana_lo_dice_en_vez_de_quedarse_en_blanco(
+    client: TestClient, conn: sqlite3.Connection
+):
+    html = client.get("/scripts").text
+
+    assert "No hay ningún guion esperando" in html
+
+
+def test_el_editor_trae_el_texto_del_guion_en_campos_editables(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn)
+
+    html = client.get(f"/scripts/{video_id}").text
+
+    assert f'action="/scripts/{video_id}/save"' in html
+    assert 'name="gancho"' in html and GUION["hook"] in html
+    assert 'name="titulo" value="El origen"' in html
+    assert "primer parrafo" in html
+    assert "entra en 00:06" in html
+
+
+def test_abrir_un_guion_que_no_existe_da_404(
+    client: TestClient, conn: sqlite3.Connection
+):
+    respuesta = client.get("/scripts/9999")
+
+    assert respuesta.status_code == 404
+    assert respuesta.json()["detail"] == "no existe el video 9999"
+
+
+def test_abrir_un_guion_ya_decidido_da_409(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn, status="script_approved")
+
+    respuesta = client.get(f"/scripts/{video_id}")
+
+    assert respuesta.status_code == 409
+    assert "ya no espera decisión" in respuesta.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Autoescape: el guion lo escribe un modelo y se sirve como HTML
+# ---------------------------------------------------------------------------
+
+INYECCION = "<script>alert(1)</script>"
+
+
+def test_un_titulo_con_html_sale_escapado_en_la_lista_de_guiones(
+    client: TestClient, conn: sqlite3.Connection
+):
+    _insertar_video(conn, title=f"El faro {INYECCION}")
+
+    html = client.get("/scripts").text
+
+    assert INYECCION not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+
+
+def test_el_texto_que_escribio_el_modelo_sale_escapado_en_el_editor(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # El guion entero lo escribe un LLM a partir de títulos de terceros: es
+    # contenido no confiable servido por el propio sistema.
+    guion = json.loads(json.dumps(GUION))
+    guion["hook"] = f"Empieza así {INYECCION}"
+    guion["chapters"][0]["title"] = 'Un "capítulo" con comillas'
+    guion["chapters"][0]["narration"] = '<img src=x onerror="alert(1)">'
+    video_id = _insertar_video(conn, title=f"El faro {INYECCION}", guion=guion)
+
+    html = client.get(f"/scripts/{video_id}").text
+
+    assert INYECCION not in html
+    assert "<img src=x" not in html
+    assert "&lt;img src=x onerror=&#34;alert(1)&#34;&gt;" in html
+    assert 'value="Un &#34;capítulo&#34; con comillas"' in html
+
+
+def test_el_aviso_de_vuelta_escapa_el_titulo_del_guion(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # El título viaja en la URL del redirect y vuelve pintado en el aviso.
+    video_id = _insertar_video(conn, title=f"El faro {INYECCION}")
+
+    respuesta = client.post(
+        f"/scripts/{video_id}/approve", data=_formulario(), follow_redirects=True
+    )
+
+    assert INYECCION not in respuesta.text
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in respuesta.text
+
+
+# ---------------------------------------------------------------------------
+# Guardar, aprobar y descartar
+# ---------------------------------------------------------------------------
+
+
+def test_guardar_vuelve_al_mismo_guion_con_el_texto_ya_cambiado(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn)
+
+    respuesta = client.post(
+        f"/scripts/{video_id}/save", data=_formulario(gancho="Un gancho mío")
+    )
+
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].startswith(f"/scripts/{video_id}?mensaje=")
+    assert _mensaje_del_redirect(respuesta) == "Cambios guardados: Un guion por revisar"
+    assert _guion_guardado(conn, video_id)["hook"] == "Un gancho mío"
+    assert _estado_del_video(conn, video_id) == "script_draft"
+
+
+def test_guardar_el_mismo_texto_con_saltos_de_windows_no_cuenta_como_edicion(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # Un textarea devuelve los saltos como CRLF (lo exige el HTML). Sin
+    # normalizarlos, abrir un guion y guardarlo sin tocar nada lo marcaría como
+    # editado y metería retornos de carro en el texto que se va a locutar.
+    video_id = _insertar_video(conn)
+    formulario = _formulario(
+        narraciones=[c["narration"].replace("\n", "\r\n") for c in GUION["chapters"]]
+    )
+
+    client.post(f"/scripts/{video_id}/save", data=formulario)
+
+    assert _guion_guardado(conn, video_id) == GUION
+
+
+def test_aprobar_desde_el_editor_mueve_el_guion_y_vuelve_a_la_lista(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn)
+
+    respuesta = client.post(
+        f"/scripts/{video_id}/approve", data=_formulario(gancho="Con mis cambios")
+    )
+
+    assert respuesta.status_code == 303
+    assert respuesta.headers["location"].startswith("/scripts?mensaje=")
+    assert _mensaje_del_redirect(respuesta) == "Guion aprobado: Un guion por revisar"
+    assert _estado_del_video(conn, video_id) == "script_approved"
+    assert _guion_guardado(conn, video_id)["hook"] == "Con mis cambios"
+
+
+def test_descartar_desde_el_editor_no_produce_el_video(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn)
+
+    respuesta = client.post(f"/scripts/{video_id}/reject")
+
+    assert respuesta.status_code == 303
+    assert _mensaje_del_redirect(respuesta) == "Guion descartado: Un guion por revisar"
+    assert _estado_del_video(conn, video_id) == "rejected"
+    assert _guion_guardado(conn, video_id) == GUION
+
+
+def test_la_segunda_pestana_que_aprueba_recibe_409_y_no_pisa_el_texto(
+    client: TestClient, conn: sqlite3.Connection
+):
+    video_id = _insertar_video(conn)
+    client.post(f"/scripts/{video_id}/approve", data=_formulario(gancho="La buena"))
+
+    respuesta = client.post(
+        f"/scripts/{video_id}/approve", data=_formulario(gancho="La tardía")
+    )
+
+    assert respuesta.status_code == 409
+    assert "ya no espera decisión" in respuesta.json()["detail"]
+    assert _estado_del_video(conn, video_id) == "script_approved"
+    assert _guion_guardado(conn, video_id)["hook"] == "La buena"
+
+
+@pytest.mark.parametrize("accion", ["save", "approve"])
+def test_un_capitulo_vaciado_da_400_y_deja_el_guion_como_estaba(
+    client: TestClient, conn: sqlite3.Connection, accion: str
+):
+    video_id = _insertar_video(conn)
+    formulario = _formulario(narraciones=[GUION["chapters"][0]["narration"], ""])
+
+    respuesta = client.post(f"/scripts/{video_id}/{accion}", data=formulario)
+
+    assert respuesta.status_code == 400
+    assert "el capítulo 2 se quedó sin narración" in respuesta.json()["detail"]
+    assert _guion_guardado(conn, video_id) == GUION
+    assert _estado_del_video(conn, video_id) == "script_draft"
+
+
+def test_un_formulario_con_capitulos_desparejados_no_guarda_nada(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # Si títulos y narraciones no vienen a pares, el emparejado por posición
+    # mezclaría el título de un capítulo con la narración de otro.
+    video_id = _insertar_video(conn)
+    formulario = _formulario(titulos=["El origen", "La grieta"], narraciones=["solo una"])
+
+    respuesta = client.post(f"/scripts/{video_id}/save", data=formulario)
+
+    assert respuesta.status_code == 400
+    assert "capítulos incompletos" in respuesta.json()["detail"]
+    assert _guion_guardado(conn, video_id) == GUION
+
+
+@pytest.mark.parametrize("accion", ["save", "approve", "reject"])
+def test_decidir_sobre_un_guion_que_no_existe_da_404(
+    client: TestClient, conn: sqlite3.Connection, accion: str
+):
+    respuesta = client.post(f"/scripts/9999/{accion}", data=_formulario())
+
+    assert respuesta.status_code == 404
+    assert respuesta.json()["detail"] == "no existe el video 9999"
+
+
+@pytest.mark.concurrencia
+def test_seis_aprobaciones_simultaneas_deciden_el_guion_una_sola_vez(
+    client: TestClient, conn: sqlite3.Connection
+):
+    # La misma carrera que ya mordió en el claim de la cola: comprobar el estado
+    # en un SELECT y escribir después dejaría pasar a las seis, y la última
+    # pisaría el texto de un guion que ya estaba aprobado.
+    video_id = _insertar_video(conn)
+    arranque = threading.Barrier(6)
+    codigos: list[int] = []
+
+    def clic(numero: int) -> None:
+        # Petición de calentamiento: el hilo del threadpool abre su conexión
+        # antes de la barrera y las seis aprobaciones caen de verdad a la vez.
+        client.get("/scripts")
+        arranque.wait()
+        respuesta = client.post(
+            f"/scripts/{video_id}/approve",
+            data=_formulario(gancho=f"Gancho del hilo {numero}"),
+        )
+        codigos.append(respuesta.status_code)
+
+    hilos = [threading.Thread(target=clic, args=(numero,)) for numero in range(6)]
+    for hilo in hilos:
+        hilo.start()
+    for hilo in hilos:
+        hilo.join(timeout=30)
+
+    guardado = _guion_guardado(conn, video_id)
+    assert sorted(codigos) == [303, 409, 409, 409, 409, 409]
+    assert _estado_del_video(conn, video_id) == "script_approved"
+    assert guardado["hook"].startswith("Gancho del hilo ")
+    assert guardado["original"] == GUION
 
 
 # ---------------------------------------------------------------------------

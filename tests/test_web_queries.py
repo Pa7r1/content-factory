@@ -10,6 +10,12 @@ guion, y cada guion es una generación completa de Gemini. Por eso su sección
 prueba las tres cosas que lo evitan: el estado y el job salen juntos o no salen,
 el segundo intento no encola nada y el job es el que el writer sabe atender.
 
+La última sección es el checkpoint del guion, que es la mitigación de diseño
+contra la política de contenido no auténtico de YouTube. Lo que se prueba ahí es
+lo que no se puede deshacer: que la edición del humano no borre lo que escribió
+el modelo, que los recuentos y las marcas se rehagan con el texto nuevo y que una
+decisión ya tomada no la pise una segunda pestaña.
+
 Base real en `tmp_path` (fixture `conn`), migraciones de producción, cero red.
 """
 
@@ -22,6 +28,7 @@ from typing import Any
 import pytest
 from freezegun import freeze_time
 
+from factory.core import models
 from factory.script import writer
 from factory.web import queries
 
@@ -650,3 +657,529 @@ def test_tras_un_bloqueo_al_aprobar_la_conexion_sigue_pudiendo_aprobar(
 
 def _estado(conn: sqlite3.Connection, idea_id: int) -> str:
     return conn.execute("SELECT status FROM ideas WHERE id = ?", (idea_id,)).fetchone()["status"]
+
+
+# ---------------------------------------------------------------------------
+# Guiones: material del checkpoint humano
+# ---------------------------------------------------------------------------
+
+
+def _palabras(cuantas: int) -> str:
+    """Un texto con exactamente ese número de palabras."""
+    return " ".join(["palabra"] * cuantas)
+
+
+# Un `script_json` tal como lo deja el writer: 5 palabras de gancho, capítulos
+# de 10, 20 y 30 y 6 de cierre. Las marcas y los totales están escritos a mano
+# —145 palabras por minuto— para que el test no dependa de la misma cuenta que
+# comprueba. Son los mismos números que ancla `tests/test_pacing.py`.
+GUION_DEL_MODELO: dict[str, Any] = {
+    "format": "misterio",
+    "model": "gemini-2.5-flash",
+    "generated_at": "2026-08-14T10:00:00Z",
+    "hook": _palabras(5),
+    "chapters": [
+        {"title": "El origen", "narration": _palabras(10), "words": 10, "start_sec": 0},
+        {"title": "La grieta", "narration": _palabras(20), "words": 20, "start_sec": 6},
+        {"title": "El final", "narration": _palabras(30), "words": 30, "start_sec": 14},
+    ],
+    "outro": _palabras(6),
+    "word_count": 71,
+    "words_per_minute": 145,
+    "estimated_seconds": 29,
+}
+
+MARCADORES_DEL_MODELO = "00:00 El origen\n00:06 La grieta\n00:14 El final"
+
+
+def _guion_del_modelo() -> dict[str, Any]:
+    """Copia intacta del guion de muestra: ningún test le deja restos a otro."""
+    return json.loads(json.dumps(GUION_DEL_MODELO))
+
+
+def _insertar_video(
+    conn: sqlite3.Connection,
+    *,
+    title: str = "Un guion por revisar",
+    status: str = "script_draft",
+    guion: Any = "el del modelo",
+    idea_id: int | None = None,
+    video_format: str | None = "misterio",
+    updated_at: str | None = None,
+) -> int:
+    """Inserta un video con su guion. `guion` se serializa si es dict."""
+    if guion == "el del modelo":
+        guion = _guion_del_modelo()
+    if isinstance(guion, dict):
+        crudo: Any = json.dumps(guion, ensure_ascii=False)
+        marcadores = "\n".join(
+            f"{c['start_sec'] // 60:02d}:{c['start_sec'] % 60:02d} {c['title']}"
+            for c in guion.get("chapters", [])
+        )
+    else:
+        crudo, marcadores = guion, None
+    cur = conn.execute(
+        """
+        INSERT INTO videos (idea_id, kind, format, title, chapters, script_json,
+                            status, updated_at)
+        VALUES (?, 'long', ?, ?, ?, ?, ?, COALESCE(?, datetime('now')))
+        """,
+        (idea_id, video_format, title, marcadores, crudo, status, updated_at),
+    )
+    return int(cur.lastrowid)
+
+
+def _fila_video(conn: sqlite3.Connection, video_id: int) -> sqlite3.Row:
+    return conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
+
+
+def _guion_guardado(conn: sqlite3.Connection, video_id: int) -> dict[str, Any]:
+    return json.loads(_fila_video(conn, video_id)["script_json"])
+
+
+def _edicion(
+    guion: dict[str, Any] | None = None,
+    *,
+    hook: str | None = None,
+    outro: str | None = None,
+    capitulos: list[tuple[str, str]] | None = None,
+) -> queries.ScriptEdit:
+    """Lo que devolvería el formulario: el guion tal cual, salvo lo que se cambie."""
+    base = guion if guion is not None else GUION_DEL_MODELO
+    return queries.ScriptEdit(
+        hook=base["hook"] if hook is None else hook,
+        outro=base["outro"] if outro is None else outro,
+        chapters=tuple(
+            queries.ChapterEdit(title=titulo, narration=narracion)
+            for titulo, narracion in (
+                capitulos
+                if capitulos is not None
+                else [(c["title"], c["narration"]) for c in base["chapters"]]
+            )
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# scripts_awaiting_review
+# ---------------------------------------------------------------------------
+
+
+def test_la_lista_solo_trae_los_guiones_que_esperan_decision(conn: sqlite3.Connection):
+    _insertar_video(conn, title="Esperando", status="script_draft")
+    _insertar_video(conn, title="Ya aprobado", status="script_approved")
+    _insertar_video(conn, title="Descartado", status="rejected")
+    _insertar_video(conn, title="Sin guion todavía", status="idea_approved")
+
+    lista = queries.scripts_awaiting_review(conn)
+
+    assert [guion.title for guion in lista] == ["Esperando"]
+
+
+def test_el_guion_que_lleva_mas_tiempo_esperando_sale_primero(conn: sqlite3.Connection):
+    _insertar_video(conn, title="De ayer", updated_at="2026-08-13 09:00:00")
+    _insertar_video(conn, title="De anteayer", updated_at="2026-08-12 09:00:00")
+    _insertar_video(conn, title="De hoy", updated_at="2026-08-14 09:00:00")
+
+    lista = queries.scripts_awaiting_review(conn)
+
+    assert [guion.title for guion in lista] == ["De anteayer", "De ayer", "De hoy"]
+
+
+def test_un_guion_sin_idea_detras_sigue_apareciendo_en_la_lista(
+    conn: sqlite3.Connection,
+):
+    # `videos.idea_id` admite NULL. Con un JOIN normal el guion desaparecería de
+    # la lista, y lo que el humano no ve no lo decide: el video se queda parado
+    # para siempre.
+    _insertar_video(conn, title="Huérfano", idea_id=None)
+
+    lista = queries.scripts_awaiting_review(conn)
+
+    assert [(guion.title, guion.niche) for guion in lista] == [("Huérfano", None)]
+
+
+def test_la_linea_de_la_lista_trae_lo_que_pinta_la_plantilla(conn: sqlite3.Connection):
+    idea_id = _insertar_idea(conn, niche="historias_epicas")
+    video_id = _insertar_video(conn, title="Un guion por revisar", idea_id=idea_id)
+
+    linea = queries.scripts_awaiting_review(conn)[0]
+
+    assert linea.video_id == video_id
+    assert linea.title == "Un guion por revisar"
+    assert linea.niche == "historias_epicas"
+    assert linea.format == "misterio"
+    assert linea.chapter_count == 3
+    assert linea.word_count == 71
+    assert linea.estimated_minutes == 0.5
+    assert linea.edited is False
+
+
+def test_un_guion_ya_editado_se_ve_marcado_en_la_lista(conn: sqlite3.Connection):
+    guion = _guion_del_modelo() | {"edited_by_human": True}
+    _insertar_video(conn, guion=guion)
+
+    assert queries.scripts_awaiting_review(conn)[0].edited is True
+
+
+def test_un_script_json_ilegible_no_tumba_la_lista(conn: sqlite3.Connection):
+    # El listado es la única puerta al checkpoint: una traza de 500 aquí deja
+    # parados TODOS los guiones, no solo el que tiene el JSON roto.
+    _insertar_video(conn, title="Con el JSON roto", guion="{esto no es json")
+
+    linea = queries.scripts_awaiting_review(conn)[0]
+
+    assert linea.title == "Con el JSON roto"
+    assert linea.chapter_count == 0
+    assert linea.word_count is None
+    assert linea.estimated_minutes is None
+
+
+# ---------------------------------------------------------------------------
+# script_for_review
+# ---------------------------------------------------------------------------
+
+
+def test_el_detalle_trae_los_capitulos_numerados_y_con_su_marca(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn)
+
+    detalle = queries.script_for_review(conn, video_id)
+
+    assert [(c.number, c.title, c.start_mmss, c.words) for c in detalle.chapters] == [
+        (1, "El origen", "00:00", 10),
+        (2, "La grieta", "00:06", 20),
+        (3, "El final", "00:14", 30),
+    ]
+    assert detalle.hook == _palabras(5)
+    assert detalle.outro == _palabras(6)
+    assert detalle.model == "gemini-2.5-flash"
+
+
+def test_un_guion_ya_decidido_no_se_abre_en_el_editor(conn: sqlite3.Connection):
+    video_id = _insertar_video(conn, status="script_approved")
+
+    with pytest.raises(queries.ScriptLocked, match="script_approved"):
+        queries.script_for_review(conn, video_id)
+
+
+def test_un_video_que_no_existe_no_se_abre_en_el_editor(conn: sqlite3.Connection):
+    with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
+        queries.script_for_review(conn, 404)
+
+
+# ---------------------------------------------------------------------------
+# save_script_draft: guardar sin decidir
+# ---------------------------------------------------------------------------
+
+
+def test_guardar_deja_el_texto_nuevo_y_el_guion_en_el_checkpoint(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn)
+
+    titulo = queries.save_script_draft(conn, video_id, _edicion(hook="Otro gancho"))
+
+    fila = _fila_video(conn, video_id)
+    assert titulo == "Un guion por revisar"
+    assert fila["status"] == "script_draft"
+    assert _guion_guardado(conn, video_id)["hook"] == "Otro gancho"
+
+
+def test_guardar_rehace_los_recuentos_y_las_marcas_con_el_texto_nuevo(
+    conn: sqlite3.Connection,
+):
+    # El primer capítulo pasa de 10 a 40 palabras: 17 s en vez de 4. Todo lo que
+    # va detrás se mueve. Los números son los de `pacing` escritos a mano.
+    video_id = _insertar_video(conn)
+    edicion = _edicion(
+        capitulos=[
+            ("El origen", _palabras(40)),
+            ("La grieta", _palabras(20)),
+            ("El final", _palabras(30)),
+        ]
+    )
+
+    queries.save_script_draft(conn, video_id, edicion)
+
+    guion = _guion_guardado(conn, video_id)
+    assert [c["words"] for c in guion["chapters"]] == [40, 20, 30]
+    assert [c["start_sec"] for c in guion["chapters"]] == [0, 19, 27]
+    assert guion["word_count"] == 101
+    assert guion["estimated_seconds"] == 42
+    assert guion["words_per_minute"] == 145
+
+
+def test_guardar_rehace_los_marcadores_que_van_a_youtube(conn: sqlite3.Connection):
+    # `videos.chapters` es la lista que se pega en la descripción. Si no se
+    # rehace, las marcas apuntan a segundos que ya no existen en el audio.
+    video_id = _insertar_video(conn)
+    edicion = _edicion(
+        capitulos=[
+            ("El origen", _palabras(40)),
+            ("La grieta", _palabras(20)),
+            ("Otro final", _palabras(30)),
+        ]
+    )
+
+    queries.save_script_draft(conn, video_id, edicion)
+
+    assert _fila_video(conn, video_id)["chapters"].splitlines() == [
+        "00:00 El origen",
+        "00:19 La grieta",
+        "00:27 Otro final",
+    ]
+
+
+def test_la_primera_edicion_guarda_lo_que_habia_escrito_el_modelo(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn)
+
+    queries.save_script_draft(conn, video_id, _edicion(hook="Lo reescribo yo"))
+
+    guion = _guion_guardado(conn, video_id)
+    assert guion["original"] == GUION_DEL_MODELO
+    assert guion["edited_by_human"] is True
+    assert guion["edited_at"].endswith("Z")
+
+
+@freeze_time(AHORA)
+def test_la_marca_de_la_edicion_se_escribe_como_la_del_modelo(
+    conn: sqlite3.Connection,
+):
+    # `edited_at` y `generated_at` los va a leer el mismo análisis del hito 5:
+    # con dos formatos distintos, comparar cuánto tardó el humano en corregir
+    # exige adivinar cuál es cuál.
+    video_id = _insertar_video(conn)
+
+    queries.save_script_draft(conn, video_id, _edicion(hook="Lo reescribo yo"))
+
+    assert _guion_guardado(conn, video_id)["edited_at"] == "2026-08-06T07:30:00Z"
+
+
+def test_la_segunda_edicion_no_pisa_lo_que_habia_escrito_el_modelo(
+    conn: sqlite3.Connection,
+):
+    # El dato con el que el hito 5 va a medir cuánto hay que corregirle al
+    # modelo. Pisado una vez, no vuelve: no hay copia en ningún otro sitio.
+    video_id = _insertar_video(conn)
+    queries.save_script_draft(conn, video_id, _edicion(hook="Primera pasada"))
+
+    primera = _guion_guardado(conn, video_id)
+    queries.save_script_draft(conn, video_id, _edicion(primera, hook="Segunda pasada"))
+
+    guion = _guion_guardado(conn, video_id)
+    assert guion["hook"] == "Segunda pasada"
+    assert guion["original"] == GUION_DEL_MODELO
+    assert "original" not in guion["original"]
+
+
+def test_guardar_sin_tocar_una_coma_no_marca_el_guion_como_editado(
+    conn: sqlite3.Connection,
+):
+    # Abrir un guion, leerlo y pulsar guardar no es una edición. Marcarlo como
+    # tal mentiría justo en la señal que mide la calidad del modelo.
+    video_id = _insertar_video(conn)
+
+    queries.save_script_draft(conn, video_id, _edicion())
+
+    assert _guion_guardado(conn, video_id) == GUION_DEL_MODELO
+
+
+def test_guardar_sin_cambios_tampoco_estrena_el_original(conn: sqlite3.Connection):
+    video_id = _insertar_video(conn)
+
+    queries.save_script_draft(conn, video_id, _edicion())
+
+    assert "original" not in _guion_guardado(conn, video_id)
+
+
+@pytest.mark.parametrize(
+    "edicion, motivo",
+    [
+        (_edicion(hook=""), "gancho"),
+        (_edicion(outro=""), "cierre"),
+        (_edicion(capitulos=[]), "sin capítulos"),
+        (_edicion(capitulos=[("", _palabras(10))]), "sin título"),
+        (_edicion(capitulos=[("El origen", "")]), "sin narración"),
+    ],
+)
+def test_una_edicion_con_un_hueco_no_se_guarda(
+    conn: sqlite3.Connection, edicion: queries.ScriptEdit, motivo: str
+):
+    # El hito 3 locuta este texto tal cual: un hueco es un video mudo a medias.
+    video_id = _insertar_video(conn)
+
+    with pytest.raises(queries.ScriptInvalid, match=motivo):
+        queries.save_script_draft(conn, video_id, edicion)
+
+    assert _guion_guardado(conn, video_id) == GUION_DEL_MODELO
+
+
+def test_una_edicion_invalida_deja_el_guion_entero_como_estaba(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn)
+
+    with pytest.raises(queries.ScriptInvalid):
+        queries.save_script_draft(
+            conn,
+            video_id,
+            _edicion(capitulos=[("El origen", _palabras(40)), ("La grieta", "")]),
+        )
+
+    fila = _fila_video(conn, video_id)
+    assert fila["status"] == "script_draft"
+    assert fila["chapters"] == MARCADORES_DEL_MODELO
+    assert json.loads(fila["script_json"]) == GUION_DEL_MODELO
+
+
+def test_guardar_sobre_un_guion_ya_decidido_no_lo_pisa(conn: sqlite3.Connection):
+    video_id = _insertar_video(conn, status="script_approved")
+
+    with pytest.raises(queries.ScriptLocked, match="script_approved"):
+        queries.save_script_draft(conn, video_id, _edicion(hook="Llego tarde"))
+
+    assert _guion_guardado(conn, video_id) == GUION_DEL_MODELO
+
+
+def test_guardar_en_un_video_que_no_existe_es_un_error_explicito(
+    conn: sqlite3.Connection,
+):
+    with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
+        queries.save_script_draft(conn, 404, _edicion())
+
+
+# ---------------------------------------------------------------------------
+# approve_script
+# ---------------------------------------------------------------------------
+
+
+def test_aprobar_guarda_la_edicion_y_mueve_el_video_en_la_misma_transaccion(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn)
+
+    titulo = queries.approve_script(conn, video_id, _edicion(hook="Con mis cambios"))
+
+    fila = _fila_video(conn, video_id)
+    assert titulo == "Un guion por revisar"
+    assert fila["status"] == "script_approved"
+    assert json.loads(fila["script_json"])["hook"] == "Con mis cambios"
+
+
+def test_aprobar_conserva_tambien_lo_que_escribio_el_modelo(conn: sqlite3.Connection):
+    # Aprobar es la última oportunidad de guardar el original: después el video
+    # ya no vuelve al checkpoint.
+    video_id = _insertar_video(conn)
+
+    queries.approve_script(conn, video_id, _edicion(hook="Con mis cambios"))
+
+    assert _guion_guardado(conn, video_id)["original"] == GUION_DEL_MODELO
+
+
+def test_los_estados_del_checkpoint_son_transiciones_legales_del_modelo():
+    # Las cadenas de `queries` y la máquina de estados de `core/models` están
+    # escritas por separado. Si dejan de casar, aprobar reventaría con
+    # IllegalTransition delante del único humano que puede desbloquear el video.
+    assert models.can_transition(
+        queries.SCRIPT_DRAFT_STATUS, queries.SCRIPT_APPROVED_STATUS
+    )
+    assert models.can_transition(
+        queries.SCRIPT_DRAFT_STATUS, queries.SCRIPT_REJECTED_STATUS
+    )
+
+
+def test_aprobar_dos_veces_no_reabre_el_guion_ni_pisa_el_texto(
+    conn: sqlite3.Connection,
+):
+    # La segunda pestaña, el doble clic y el botón "atrás".
+    video_id = _insertar_video(conn)
+    queries.approve_script(conn, video_id, _edicion(hook="La buena"))
+
+    with pytest.raises(queries.ScriptLocked, match="script_approved"):
+        queries.approve_script(conn, video_id, _edicion(hook="La tardía"))
+
+    fila = _fila_video(conn, video_id)
+    assert fila["status"] == "script_approved"
+    assert json.loads(fila["script_json"])["hook"] == "La buena"
+
+
+def test_una_edicion_invalida_no_aprueba_el_guion(conn: sqlite3.Connection):
+    video_id = _insertar_video(conn)
+
+    with pytest.raises(queries.ScriptInvalid):
+        queries.approve_script(conn, video_id, _edicion(hook=""))
+
+    assert _fila_video(conn, video_id)["status"] == "script_draft"
+
+
+def test_aprobar_un_video_que_no_existe_es_un_error_explicito(
+    conn: sqlite3.Connection,
+):
+    with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
+        queries.approve_script(conn, 404, _edicion())
+
+
+def test_tras_un_guion_bloqueado_la_conexion_sigue_pudiendo_aprobar(
+    conn: sqlite3.Connection,
+):
+    # Aprobar escribe dentro de una transacción: si el rollback del camino
+    # bloqueado la dejase abierta, el checkpoint entero quedaría de adorno.
+    bloqueado = _insertar_video(conn, title="Bloqueado", status="script_approved")
+    libre = _insertar_video(conn, title="Libre")
+
+    with pytest.raises(queries.ScriptLocked):
+        queries.approve_script(conn, bloqueado, _edicion())
+
+    assert queries.approve_script(conn, libre, _edicion()) == "Libre"
+    assert _fila_video(conn, libre)["status"] == "script_approved"
+
+
+# ---------------------------------------------------------------------------
+# reject_script
+# ---------------------------------------------------------------------------
+
+
+def test_descartar_un_guion_mueve_el_video_y_no_toca_el_texto(
+    conn: sqlite3.Connection,
+):
+    # Quien descarta no quiere conservar su edición: escribirla dejaría en la
+    # base un texto que nadie va a volver a mirar como si fuera el guion bueno.
+    video_id = _insertar_video(conn)
+
+    titulo = queries.reject_script(conn, video_id)
+
+    fila = _fila_video(conn, video_id)
+    assert titulo == "Un guion por revisar"
+    assert fila["status"] == "rejected"
+    assert json.loads(fila["script_json"]) == GUION_DEL_MODELO
+    assert fila["chapters"] == MARCADORES_DEL_MODELO
+
+
+def test_descartar_dos_veces_el_mismo_guion_da_bloqueado(conn: sqlite3.Connection):
+    video_id = _insertar_video(conn)
+    queries.reject_script(conn, video_id)
+
+    with pytest.raises(queries.ScriptLocked, match="rejected"):
+        queries.reject_script(conn, video_id)
+
+
+def test_descartar_un_guion_ya_aprobado_no_lo_devuelve_atras(
+    conn: sqlite3.Connection,
+):
+    video_id = _insertar_video(conn, status="script_approved")
+
+    with pytest.raises(queries.ScriptLocked, match="script_approved"):
+        queries.reject_script(conn, video_id)
+
+    assert _fila_video(conn, video_id)["status"] == "script_approved"
+
+
+def test_descartar_un_video_que_no_existe_es_un_error_explicito(
+    conn: sqlite3.Connection,
+):
+    with pytest.raises(queries.ScriptNotFound, match="no existe el video 404"):
+        queries.reject_script(conn, 404)
