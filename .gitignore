@@ -6,3 +6,5 @@ data/factory.db*
 data/assets/
 *.log
 .pytest_cache/
+.atl/
+
